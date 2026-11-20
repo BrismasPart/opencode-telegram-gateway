@@ -100,6 +100,20 @@ export default {
     const vision = visionConfig() ? new VisionDescriber(token) : null
     let richDisabled = false // latched off on a capability error (method not found)
 
+    // Status indicator: capture the original short description once, restore at shutdown.
+    const statusFile = `${process.env.HOME || ""}/.local/state/opencode/telegram-status-${me.id}.json`
+    if (config.statusIndicator) {
+      try {
+        const { readFileSync, writeFileSync, existsSync, mkdirSync } = await import("node:fs")
+        if (!existsSync(statusFile)) {
+          // Don't overwrite an operator's real description with "Online".
+          mkdirSync(`${process.env.HOME || ""}/.local/state/opencode`, { recursive: true })
+          writeFileSync(statusFile, JSON.stringify({ original: "" }), { mode: 0o600 })
+        }
+        await api.setShortDescription("Online")
+      } catch { /* best effort */ }
+    }
+
     const stopStreaming = config.streaming ? startStreaming(ctx, config, active, api) : () => {}
 
     // Post-connect housekeeping: register the `/` menu off the connect path so
@@ -358,7 +372,14 @@ export default {
               }
               // Whole-command proof: show it in the card if it fits; otherwise
               // send a document first and only then enable Approve.
-              const text = approvalText(state)
+              // Pull the agent's own last message so the "why" is part of the
+              // card, not a separate text arriving after the approval request.
+              let contextText: string | undefined
+              try {
+                const msgs = await ctx.session.context({ sessionID: d.sessionID })
+                contextText = extractAssistantText(msgs) || undefined
+              } catch { /* best effort */ }
+              const text = approvalText(state, contextText)
               if (new TextEncoder().encode(text).byteLength <= config.maxTextChars) {
                 state.canApprove = true
               }
@@ -597,6 +618,15 @@ export default {
       const sessionID = await sessions.getOrCreate(sessionKey, sessionTitle)
       sessionOwner.set(sessionID, { chatId, ownerId: userId })
 
+      // Quick polish: 👀 reaction + typing indicator while the agent works.
+      if (config.reactions) void api.setReaction(chatId, msg.message_id, "👀")
+      let typingTimer: ReturnType<typeof setInterval> | undefined
+      if (config.typingIndicator) {
+        void api.setTyping(chatId)
+        typingTimer = setInterval(() => void api.setTyping(chatId), 3_000)
+        typingTimer.unref?.()
+      }
+
       let previewId: number | undefined
       if (config.streaming && !config.richMessages) {
         try {
@@ -612,10 +642,16 @@ export default {
         const prompt = [messageText(msg), ...notes].filter(Boolean).join("\n\n")
         await sessions.prompt(sessionID, prompt, files)
         const final = await sessions.finalText(sessionID)
+        if (typingTimer) clearInterval(typingTimer)
+        typingTimer = undefined
         await deliver(chatId, final, msg.message_id, previewId)
+        if (config.reactions) void api.setReaction(chatId, msg.message_id, "👍")
         diag("reply", token, { update: update.update_id, chat: chatId })
         console.info(`[telegram-gateway] replied in chat ${chatId} via session ${redact(sessionID, token)}`)
       } catch (e) {
+        if (typingTimer) clearInterval(typingTimer)
+        typingTimer = undefined
+        if (config.reactions) void api.setReaction(chatId, msg.message_id, "👎")
         diag("turn_error", token, { update: update.update_id, chat: chatId, error: (e as Error)?.name ?? "unknown" })
         console.error(`[telegram-gateway] turn failed in chat ${chatId}: ${safeError(e, token)}`)
         if (previewId !== undefined) {
@@ -632,6 +668,7 @@ export default {
           }
         }
       } finally {
+        if (typingTimer) clearInterval(typingTimer)
         active.delete(sessionID)
       }
     }
@@ -685,6 +722,9 @@ export default {
     }
 
     return () => {
+      if (config.statusIndicator) {
+        void api.setShortDescription("Offline").catch(() => {})
+      }
       batcher.close()
       stopApprovals()
       for (const st of approvals.values()) if (st.timer) clearTimeout(st.timer)

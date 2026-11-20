@@ -358,6 +358,30 @@ export class TelegramApi {
     }
   }
 
+  /** Set a reaction on a message (e.g. 👀 while working, 👍/👎 on completion). */
+  async setReaction(chatId: string, messageId: number, emoji: string): Promise<void> {
+    try {
+      await this.callJson("setMessageReaction", {
+        chat_id: chatId, message_id: messageId,
+        reaction: [{ type: "emoji", emoji }],
+      })
+    } catch { /* best effort — reactions never fail the turn */ }
+  }
+
+  /** Signal the typing indicator (sendChatAction). */
+  async setTyping(chatId: string): Promise<void> {
+    try {
+      await this.callJson("sendChatAction", { chat_id: chatId, action: "typing" })
+    } catch { /* best effort */ }
+  }
+
+  /** Set the bot's short description (Online/Offline status indicator). */
+  async setShortDescription(description: string): Promise<void> {
+    try {
+      await this.callJson("setMyShortDescription", { short_description: description })
+    } catch { /* best effort */ }
+  }
+
   /** Ack a callback query — always call this so the user's tap stops spinning. */
   async answerCallback(id: string, text?: string): Promise<void> {
     try {

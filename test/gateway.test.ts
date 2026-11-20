@@ -3,7 +3,7 @@ import { redact } from "../src/redact.js"
 import { splitByUtf16 } from "../src/telegram.js"
 import { loadConfig } from "../src/config.js"
 import { extractDelta } from "../src/streaming.js"
-import { extractAssistantText } from "../src/sessions.js"
+import { extractAssistantText, SessionBridge } from "../src/sessions.js"
 import { loadSecretsFile } from "../src/secrets.js"
 import { acquirePollerLock } from "../src/single-instance.js"
 import { parseCommand, commandAllowed, runCommand } from "../src/commands.js"
@@ -499,6 +499,27 @@ describe("flood windows", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("turn completion ordering", () => {
+  test("finalText keeps waiting while a permission is pending", async () => {
+    let waits = 0
+    let lists = 0
+    const ctx = {
+      session: {
+        wait: async () => { waits++ },
+        context: async () => [{ type: "assistant", content: [{ type: "text", text: "done" }] }],
+      },
+      permission: {
+        list: async () => { lists++; return lists < 3 ? [{ id: "per_1" }] : [] },
+      },
+    }
+    const bridge = new SessionBridge(ctx, {} as any)
+    const text = await bridge.finalText("ses_test", 5000)
+    expect(text).toBe("done")
+    expect(waits).toBeGreaterThanOrEqual(3)
+    expect(lists).toBeGreaterThanOrEqual(3)
   })
 })
 

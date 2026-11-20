@@ -50,15 +50,18 @@ export function approvalChoices(canApprove: boolean): ApprovalChoice[] {
   return canApprove ? ["once", "always", "deny"] : ["deny"]
 }
 
-export function approvalText(state: ApprovalState): string {
+export function approvalText(state: ApprovalState, context?: string): string {
   const head = `🔒 Approval required\nAction: ${state.action}`
+  // The agent's explanation belongs in the card, so the human decides with
+  // full context — not in a separate message that arrives afterwards.
+  const why = context ? `\n\n${escapeHtml(redact(context, ""))}` : ""
   const cmdBlock = state.command
     ? `\n\n<pre>${escapeHtml(redact(state.command, ""))}</pre>`
     : ""
   const note = state.canApprove
     ? "\n\nApprove only if you understand this command."
     : "\n\n⚠️ Command too long to show here — full command attached above. Deny only until confirmed."
-  return head + cmdBlock + note
+  return head + why + cmdBlock + note
 }
 
 function escapeHtml(s: string): string {

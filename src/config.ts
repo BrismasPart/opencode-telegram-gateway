@@ -35,6 +35,12 @@ export interface GatewayConfig {
   unauthorizedBehavior: "pair" | "ignore";
   /** Max entries in the Telegram `/` command menu (clamped 1..100). */
   commandMenuMax: number;
+  /** 👀 while working, 👍/👎 when the turn finishes. */
+  reactions: boolean;
+  /** sendChatAction while the agent works. */
+  typingIndicator: boolean;
+  /** Flip the bot's short description to Online/Offline. */
+  statusIndicator: boolean;
   /** Surface OpenCode permission requests as Telegram approval cards. */
   approvalsEnabled: boolean;
   /** Seconds before a pending Telegram approval is rejected (fail closed). */
@@ -166,6 +172,9 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     userCommands,
     unauthorizedBehavior,
     commandMenuMax: intEnv("OPENCODE_TELEGRAM_COMMAND_MENU_MAX", 60, 1, 100),
+    reactions: boolEnv("TELEGRAM_REACTIONS", false),
+    typingIndicator: boolEnv("OPENCODE_TELEGRAM_TYPING", true),
+    statusIndicator: boolEnv("OPENCODE_TELEGRAM_STATUS_INDICATOR", false),
     approvalsEnabled: boolEnv("OPENCODE_TELEGRAM_APPROVALS", true),
     approvalTimeoutMs: intEnv("OPENCODE_TELEGRAM_APPROVAL_TIMEOUT", 300, 5, 3600) * 1000,
     mediaEnabled: (process.env.OPENCODE_TELEGRAM_MEDIA ?? "true").toLowerCase() !== "false",

@@ -32,6 +32,8 @@ Based on Hermes Gateway.
   GFM markdown so headings, tables, task lists, code fences and math render
   natively (32 KB limit). Falls back to MarkdownV2 on parse errors and latches
   off if the method is unavailable. Streaming previews are off while enabled.
+- **Quick polish**: optional 👀/👍/👎 reactions, typing indicator while the
+  agent works, and an Online/Offline bot short-description indicator.
 - **Approval cards**: OpenCode's native permission requests surface in Telegram
   as inline-keyboard cards (Allow Once / Always / Deny). Cards are born
   Deny-only until the full redacted command is shown; taps are bound to the
@@ -122,6 +124,9 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `true` | Use Bot API 10.1 native Rich Messages for GFM constructs. |
 | `OPENCODE_TELEGRAM_APPROVALS` | no | `true` | Surface OpenCode permission requests as Telegram approval cards. |
 | `OPENCODE_TELEGRAM_APPROVAL_TIMEOUT` | no | `300` | Seconds before a pending approval is auto-denied (5..3600). |
+| `TELEGRAM_REACTIONS` | no | `false` | 👀 while working, 👍/👎 on completion. |
+| `OPENCODE_TELEGRAM_TYPING` | no | `true` | Typing indicator while the agent works. |
+| `OPENCODE_TELEGRAM_STATUS_INDICATOR` | no | `false` | Flip bot short description to Online/Offline. |
 | `OPENCODE_TELEGRAM_FLOOD_FILE` | no | data dir | Persisted per-chat flood-window file. |
 | `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables sticker/image descriptions. |
 | `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / see src | Vision credentials/model/prompt. |

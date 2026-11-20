@@ -134,12 +134,26 @@ export class SessionBridge {
     await this.ctx.session.prompt({ sessionID, text, ...(files?.length ? { files } : {}) })
   }
 
-  /** Wait for the turn to finish, then read the last assistant text. */
+  /** Wait for the turn to finish, then read the last assistant text.
+   * A pending permission is NOT "done" — keep waiting so we never deliver a
+   * message about an approval before it has been answered (the agent may be
+   * blocked mid-turn waiting for the human). */
   async finalText(sessionID: string, timeoutMs = 600_000): Promise<string> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error("turn timeout")), timeoutMs)
     try {
-      await this.ctx.session.wait({ sessionID }, { signal: controller.signal })
+      for (;;) {
+        await this.ctx.session.wait({ sessionID }, { signal: controller.signal })
+        // If a permission is still pending, the turn is paused (not finished).
+        // Wait briefly and re-check rather than reading a premature final text.
+        let pending = 0
+        try {
+          const list = await this.ctx.permission.list({ sessionID })
+          pending = Array.isArray(list) ? list.length : (Array.isArray((list as any)?.data) ? (list as any).data.length : 0)
+        } catch { /* permission API unavailable — treat as no pending */ }
+        if (!pending || controller.signal.aborted) break
+        await new Promise((r) => setTimeout(r, 1_000))
+      }
     } catch {
       // A timeout does not mean the turn failed; read whatever is available.
     } finally {
