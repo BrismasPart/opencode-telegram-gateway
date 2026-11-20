@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenCode service (Telegram gateway plugin)
+Documentation=https://opencode.ai/docs/cli
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Secrets live only in this owner-only file; never in this unit or opencode.json.
+EnvironmentFile=%h/.config/opencode/telegram-gateway.env
+ExecStart=@OPENCODE_BIN@ serve --service --hostname 127.0.0.1 --port 4096
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
