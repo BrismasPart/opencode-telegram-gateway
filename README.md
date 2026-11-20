@@ -1,8 +1,8 @@
 # OpenCode Telegram Gateway (plugin)
 
 A dependency-free V2 OpenCode server plugin that bridges Telegram messages to
-OpenCode sessions. Security model is derived from the Hermes Telegram gateway
-analysis in `../HERMES_TELEGRAM_GATEWAY_ANALYSIS.md`.
+OpenCode sessions. 
+Based on Hermes Gateway.
 
 ## Scope
 
