@@ -39,7 +39,7 @@ Based on Hermes Gateway.
 
 ## Load the plugin
 
-Either drop it in `.opencode/plugins/telegram-gateway/` (auto-loaded), or add
+Either drop it in `.opencode/plugins/opencode-telegram-gateway/` (auto-loaded), or add
 to `opencode.json(c)`:
 
 ```jsonc
