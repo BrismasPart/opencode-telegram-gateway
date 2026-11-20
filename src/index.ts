@@ -34,6 +34,10 @@ import {
   groupProviders, providerKeyboard, modelKeyboard, providerText, modelText,
   modelAt, type PickerState, type PickerModel,
 } from "./model_picker.js"
+import {
+  approvalText, approvalChoices, approvalWord, decisionFor, newApprovalId,
+  type ApprovalState, type ApprovalChoice,
+} from "./approval.js"
 import { toMarkdownV2 } from "./markdown.js"
 
 type PluginCtx = {
@@ -89,6 +93,9 @@ export default {
     const controller = new AbortController()
     const lastDenyNotice = new Map<string, number>()
     const pickerState = new Map<string, PickerState>() // one picker per chat
+    const approvals = new Map<string, ApprovalState>() // approvalId → state
+    const sessionOwner = new Map<string, { chatId: string; ownerId: string }>() // OpenCode session → chat
+    const approvalTimerMs = config.approvalTimeoutMs
     const forumMenu = new ForumMenuGuard(api, token, menuRowsForForum(config.commandMenuMax))
     const vision = visionConfig() ? new VisionDescriber(token) : null
     let richDisabled = false // latched off on a capability error (method not found)
@@ -258,6 +265,118 @@ export default {
       return true
     }
 
+    /** Fail-closed timeout: always reject, no authorization gate. */
+    const timeoutApproval = async (id: string): Promise<void> => {
+      const state = approvals.get(id)
+      if (!state || state.resolved) return
+      state.resolved = true
+      if (state.timer) clearTimeout(state.timer)
+      approvals.delete(id)
+      try {
+        await ctx.permission.reply({ sessionID: state.sessionID, requestID: state.requestID, decision: "reject" })
+        await api.editText(
+          state.chatId, state.messageId,
+          "⏱️ Approval timed out after 5 minutes — command did NOT run.",
+          undefined, undefined, { inline_keyboard: [] },
+        ).catch(() => {})
+        diag("approval_timeout_denied", token, { session: state.sessionID })
+      } catch (e) {
+        diag("approval_timeout_error", token, { error: (e as Error)?.name ?? "unknown" })
+      }
+    }
+
+    /** Resolve a pending approval via OpenCode's permission API, then edit the card. */
+    const resolveApproval = async (id: string, choice: ApprovalChoice, actorId: string): Promise<boolean> => {
+      const state = approvals.get(id)
+      if (!state || state.resolved) return false
+      // Authorize: allowlist already checked at dispatch; enforce opener/admin here.
+      if (actorId !== state.ownerId && !state.adminIds.has(actorId)) {
+        await api.answerCallback(id, "Only the person who triggered this can approve.").catch(() => {})
+        return false
+      }
+      state.resolved = true
+      if (state.timer) clearTimeout(state.timer)
+      approvals.delete(id)
+      try {
+        await ctx.permission.reply({ sessionID: state.sessionID, requestID: state.requestID, decision: decisionFor(choice) })
+        await api.editText(
+          state.chatId, state.messageId,
+          `${choice === "deny" ? "Denied" : "Approved"} by ${actorId} — command ${choice === "deny" ? "did NOT run" : "will run"}.`,
+          undefined, undefined, { inline_keyboard: [] },
+        ).catch(() => {})
+        diag("approval_resolved", token, { choice, session: state.sessionID })
+        return true
+      } catch (e) {
+        diag("approval_error", token, { choice, error: (e as Error)?.name ?? "unknown", detail: safeError(e, token) })
+        // Fail closed: try to reject so the command never runs.
+        try {
+          await ctx.permission.reply({ sessionID: state.sessionID, requestID: state.requestID, decision: "reject" })
+        } catch { /* best effort */ }
+        return false
+      }
+    }
+
+    /** Subscribe to OpenCode permission requests and render Telegram cards. */
+    const startApprovalListener = (): (() => void) => {
+      if (!config.approvalsEnabled) return () => {}
+      const controller = new AbortController()
+      void (async () => {
+        try {
+          for await (const event of ctx.event.subscribe({ types: ["permission.asked", "permission.replied"], signal: controller.signal })) {
+            const ev = event as any
+            if (ev.type === "permission.replied" || ev.type === "permission.asked") {
+              const d = ev.data ?? {}
+              if (ev.type === "permission.replied") {
+                // Answered elsewhere (e.g. TUI) — drop our card state.
+                for (const [id, st] of approvals) {
+                  if (st.sessionID === d.sessionID && st.requestID === d.requestID) {
+                    st.resolved = true
+                    if (st.timer) clearTimeout(st.timer)
+                    approvals.delete(id)
+                  }
+                }
+                continue
+              }
+              const owner = sessionOwner.get(d.sessionID)
+              if (!owner) continue // not a Telegram-driven session
+              const command = (d.resources ?? []).join(" ") || d.message || ""
+              const id = newApprovalId()
+              const state: ApprovalState = {
+                id, sessionID: d.sessionID, requestID: d.id,
+                chatId: owner.chatId, ownerId: owner.ownerId, adminIds: config.adminUsers,
+                messageId: 0, canApprove: false, action: d.action ?? "tool", command, resolved: false,
+              }
+              // Whole-command proof: show it in the card if it fits; otherwise
+              // send a document first and only then enable Approve.
+              const text = approvalText(state)
+              if (new TextEncoder().encode(text).byteLength <= config.maxTextChars) {
+                state.canApprove = true
+              }
+              const kb = { inline_keyboard: [approvalChoices(state.canApprove).map((c) => ({
+                text: c === "once" ? "✅ Allow Once" : c === "always" ? "✅ Always" : "🚫 Deny",
+                callback_data: `ea:${c}:${id}`,
+              }))] }
+              try {
+                state.messageId = await api.sendText(owner.chatId, text, undefined, "HTML", undefined, kb)
+                approvals.set(id, state)
+                diag("approval_card", token, { session: d.sessionID, canApprove: state.canApprove })
+                state.timer = setTimeout(() => { void timeoutApproval(id) }, approvalTimerMs)
+                state.timer.unref?.()
+              } catch (e) {
+                diag("approval_send_failed", token, { error: (e as Error)?.name ?? "unknown" })
+                // Fail closed: reject so the command never runs.
+                try { await ctx.permission.reply({ sessionID: d.sessionID, requestID: d.id, decision: "reject" }) } catch { /* best effort */ }
+              }
+            }
+          }
+        } catch (e: any) {
+          if (!controller.signal.aborted) diag("approval_listener_error", token, { error: e?.name ?? "unknown" })
+        }
+      })()
+      return () => controller.abort()
+    }
+    let stopApprovals = startApprovalListener()
+
     const handleUpdate: (u: Update) => Promise<void> = async (update) => {
       // Inline-keyboard callback taps (model picker). Authorize before acting.
       if (update.callback_query) {
@@ -269,7 +388,31 @@ export default {
           return
         }
         try {
-          await handlePickerCallback(q, q.data ?? "")
+          const data = q.data ?? ""
+          if (data.startsWith("ea:")) {
+            // ea:<choice>:<id> — approval card tap.
+            const parts = data.split(":")
+            const choice = parts[1] as ApprovalChoice
+            const id = parts[2]
+            await api.answerCallback(q.id)
+            const st = approvals.get(id)
+            if (!st || st.resolved) {
+              await api.answerCallback(q.id, "Already resolved or expired").catch(() => {})
+              return
+            }
+            if (String(q.message?.message_id) !== String(st.messageId)) {
+              await api.answerCallback(q.id, "Approval expired — try again").catch(() => {})
+              return
+            }
+            if (!["once", "always", "deny"].includes(choice)) return
+            if (!st.canApprove && choice !== "deny") {
+              await api.answerCallback(q.id, "Full command not confirmed — deny only").catch(() => {})
+              return
+            }
+            await resolveApproval(id, choice, uid)
+          } else {
+            await handlePickerCallback(q, data)
+          }
         } catch (e) {
           diag("callback_error", token, { user: uid, error: (e as Error)?.name ?? "unknown" })
           await api.answerCallback(q.id).catch(() => {})
@@ -360,6 +503,27 @@ export default {
       const sessionKey = sessionKeyFor(msg, config, userId)
       const sessionTitle = sessionLabel(msg, sessionKey)
 
+      // Typed /approve|/deny, or bare yes/no — only while an approval is pending.
+      const pendingForChat = [...approvals.values()].find((s) => !s.resolved && s.chatId === chatId)
+      if (text.startsWith("/approve") || text.startsWith("/deny")) {
+        if (!pendingForChat) {
+          await deliver(chatId, "No pending approval.", msg.message_id)
+          return
+        }
+        const choice: ApprovalChoice = text.startsWith("/deny")
+          ? "deny"
+          : /always/i.test(text) ? "always" : "once"
+        await resolveApproval(pendingForChat.id, choice, userId)
+        return
+      }
+      if (pendingForChat) {
+        const word = approvalWord(text)
+        if (word) {
+          await resolveApproval(pendingForChat.id, word, userId)
+          return
+        }
+      }
+
       // Slash commands: authorized user, THEN a separate command-ACL check.
       // Never let a command reach the agent as a prompt.
       const cmd = parseCommand(text === "/start" ? "/help" : text, me.username)
@@ -421,6 +585,7 @@ export default {
       }
 
       const sessionID = await sessions.getOrCreate(sessionKey, sessionTitle)
+      sessionOwner.set(sessionID, { chatId, ownerId: userId })
 
       let previewId: number | undefined
       if (config.streaming && !config.richMessages) {
@@ -511,6 +676,9 @@ export default {
 
     return () => {
       batcher.close()
+      stopApprovals()
+      for (const st of approvals.values()) if (st.timer) clearTimeout(st.timer)
+      approvals.clear()
       stopTransport()
       supervisor?.stop()
       stopStreaming()

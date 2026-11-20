@@ -32,6 +32,11 @@ Based on Hermes Gateway.
   GFM markdown so headings, tables, task lists, code fences and math render
   natively (32 KB limit). Falls back to MarkdownV2 on parse errors and latches
   off if the method is unavailable. Streaming previews are off while enabled.
+- **Approval cards**: OpenCode's native permission requests surface in Telegram
+  as inline-keyboard cards (Allow Once / Always / Deny). Cards are born
+  Deny-only until the full redacted command is shown; taps are bound to the
+  opener/admin and the exact message, time out after 5 minutes (fail-closed
+  deny), and `/approve`, `/deny` or bare yes/no work only while pending.
 - **Persisted flood windows**: per-chat 429 cooldowns clamped to 1–300 s and
   written to a 0600 file; surviving restarts, checked before every send.
 - **Polling supervision**: heartbeat (90 s `getMe` probe), stall watchdog
@@ -115,6 +120,8 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `OPENCODE_TELEGRAM_CACHE_DIR` | no | system temp | Inbound media cache root. |
 | `OPENCODE_TELEGRAM_MARKDOWN` | no | `true` | Render replies as MarkdownV2 with plain fallback. |
 | `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `true` | Use Bot API 10.1 native Rich Messages for GFM constructs. |
+| `OPENCODE_TELEGRAM_APPROVALS` | no | `true` | Surface OpenCode permission requests as Telegram approval cards. |
+| `OPENCODE_TELEGRAM_APPROVAL_TIMEOUT` | no | `300` | Seconds before a pending approval is auto-denied (5..3600). |
 | `OPENCODE_TELEGRAM_FLOOD_FILE` | no | data dir | Persisted per-chat flood-window file. |
 | `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables sticker/image descriptions. |
 | `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / see src | Vision credentials/model/prompt. |

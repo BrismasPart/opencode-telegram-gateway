@@ -19,6 +19,7 @@ import { VisionDescriber } from "../src/vision.js"
 import { shouldProcess } from "../src/gating.js"
 import { sessionKeyFor, sessionLabel } from "../src/session_routing.js"
 import { needsRich, richFits, shouldUseRich } from "../src/rich.js"
+import { approvalChoices, approvalWord, decisionFor, approvalText, type ApprovalState } from "../src/approval.js"
 import { groupProviders, fitLabel, stripCommonPrefix, providerKeyboard, modelKeyboard, modelAt, type PickerState } from "../src/model_picker.js"
 import { InboundBatcher } from "../src/batching.js"
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs"
@@ -498,6 +499,35 @@ describe("flood windows", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("approvals", () => {
+  test("cards are born Deny-only until whole command is confirmed", () => {
+    expect(approvalChoices(false)).toEqual(["deny"])
+    expect(approvalChoices(true)).toEqual(["once", "always", "deny"])
+  })
+
+  test("bare words map to decisions only while pending (caller gates pending)", () => {
+    expect(approvalWord("yes")).toBe("once")
+    expect(approvalWord("always")).toBe("always")
+    expect(approvalWord("👎")).toBe("deny")
+    expect(approvalWord("maybe later")).toBeNull()
+    expect(decisionFor("once")).toBe("once")
+    expect(decisionFor("always")).toBe("always")
+    expect(decisionFor("deny")).toBe("reject")
+  })
+
+  test("approval text HTML-escapes and redacts the command", () => {
+    const st: ApprovalState = {
+      id: "1", sessionID: "ses", requestID: "req", chatId: "c", ownerId: "1",
+      adminIds: new Set(), messageId: 0, canApprove: false, action: "shell",
+      command: "curl https://x/bot123456789:AAabcdefghijklmnopqrstuvwxyz <script>", resolved: false,
+    }
+    const text = approvalText(st)
+    expect(text).toContain("&lt;script&gt;")
+    expect(text).not.toContain("AAabcdefghijklmnopqrstuvwxyz")
+    expect(text).toContain("Deny only")
   })
 })
 

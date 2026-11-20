@@ -35,6 +35,10 @@ export interface GatewayConfig {
   unauthorizedBehavior: "pair" | "ignore";
   /** Max entries in the Telegram `/` command menu (clamped 1..100). */
   commandMenuMax: number;
+  /** Surface OpenCode permission requests as Telegram approval cards. */
+  approvalsEnabled: boolean;
+  /** Seconds before a pending Telegram approval is rejected (fail closed). */
+  approvalTimeoutMs: number;
   /** Enable the media pipeline. */
   mediaEnabled: boolean;
   /** Hard per-file download/upload cap in bytes. */
@@ -162,6 +166,8 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     userCommands,
     unauthorizedBehavior,
     commandMenuMax: intEnv("OPENCODE_TELEGRAM_COMMAND_MENU_MAX", 60, 1, 100),
+    approvalsEnabled: boolEnv("OPENCODE_TELEGRAM_APPROVALS", true),
+    approvalTimeoutMs: intEnv("OPENCODE_TELEGRAM_APPROVAL_TIMEOUT", 300, 5, 3600) * 1000,
     mediaEnabled: (process.env.OPENCODE_TELEGRAM_MEDIA ?? "true").toLowerCase() !== "false",
     maxMediaBytes: intEnv("OPENCODE_TELEGRAM_MAX_MEDIA_BYTES", 20 * 1024 * 1024, 1024, 100 * 1024 * 1024),
     allowedChats: parseCsv(process.env.TELEGRAM_ALLOWED_CHATS),
