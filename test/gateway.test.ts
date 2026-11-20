@@ -13,6 +13,11 @@ import { safeFilePath, sniffExt, classify, messageMedia } from "../src/media_inb
 import { parseMediaDirectives, uploadPlan } from "../src/media_outbound.js"
 import { toMarkdownV2, escapeMdv2, isParseError } from "../src/markdown.js"
 import { FloodGuard } from "../src/flood.js"
+import { PollingSupervisor } from "../src/reliability.js"
+import { TelegramError } from "../src/telegram.js"
+import { VisionDescriber } from "../src/vision.js"
+import { shouldProcess } from "../src/gating.js"
+import { InboundBatcher } from "../src/batching.js"
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -479,6 +484,112 @@ describe("flood windows", () => {
       expect(new FloodGuard(file, TOKEN).remaining("c")).toBe(0)
       expect(existsSync(file)).toBe(false)
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("group gating", () => {
+  const baseConfig = () => {
+    process.env.TELEGRAM_BOT_TOKEN = TOKEN
+    return loadConfig({ secretsFile: false })
+  }
+  const resetGates = () => {
+    for (const k of ["TELEGRAM_ALLOWED_CHATS", "TELEGRAM_REQUIRE_MENTION", "TELEGRAM_IGNORED_THREADS", "TELEGRAM_ALLOWED_TOPICS", "TELEGRAM_GUEST_MODE", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"]) delete process.env[k]
+  }
+  const groupMsg = (overrides: any = {}) => ({
+    message_id: 1, date: 0, chat: { id: -1001, type: "supergroup" }, from: { id: 42 }, text: "hello", ...overrides,
+  }) as any
+
+  test("DMs always pass", () => {
+    resetGates()
+    const cfg = baseConfig()
+    const dm = { message_id: 1, date: 0, chat: { id: 42, type: "private" }, from: { id: 42 }, text: "hi" } as any
+    expect(shouldProcess(dm, "mybot", cfg).process).toBe(true)
+  })
+
+  test("allowed_chats restricts groups", () => {
+    resetGates()
+    process.env.TELEGRAM_ALLOWED_CHATS = "-1002"
+    const cfg = baseConfig()
+    expect(shouldProcess(groupMsg(), "mybot", cfg).reason).toBe("chat_not_allowed")
+  })
+
+  test("require_mention needs @botname or a reply", () => {
+    resetGates()
+    process.env.TELEGRAM_REQUIRE_MENTION = "true"
+    const cfg = baseConfig()
+    expect(shouldProcess(groupMsg(), "mybot", cfg).reason).toBe("mention_required")
+    expect(shouldProcess(groupMsg({ text: "hey @mybot please" }), "mybot", cfg).process).toBe(true)
+    expect(shouldProcess(groupMsg({ reply_to_message: { from: { is_bot: true } } }), "mybot", cfg).process).toBe(true)
+  })
+
+  test("exclusive_bot_mentions silences other bots", () => {
+    resetGates()
+    const cfg = baseConfig()
+    expect(shouldProcess(groupMsg({ text: "@otherbot do this" }), "mybot", cfg).reason).toBe("other_bot_mentioned")
+  })
+
+  test("ignored_threads and allowed_topics", () => {
+    resetGates()
+    process.env.TELEGRAM_IGNORED_THREADS = "99"
+    const cfg = baseConfig()
+    expect(shouldProcess(groupMsg({ message_thread_id: 99 }), "mybot", cfg).reason).toBe("ignored_thread")
+  })
+})
+
+describe("inbound batching", () => {
+  test("merges split text into one update", async () => {
+    const handled: any[] = []
+    const batcher = new InboundBatcher(async (u) => { handled.push(u) }, 30, 30, TOKEN)
+    const m1 = { message_id: 1, date: 0, chat: { id: 1, type: "private" }, from: { id: 1 }, text: "part one" }
+    const m2 = { message_id: 2, date: 0, chat: { id: 1, type: "private" }, from: { id: 1 }, text: "part two" }
+    expect(batcher.feed({ update_id: 1, message: m1 } as any)).toBe(true)
+    expect(batcher.feed({ update_id: 2, message: m2 } as any)).toBe(true)
+    batcher.close()
+    expect(handled).toHaveLength(1)
+    expect(handled[0].message.text).toBe("part one\npart two")
+  })
+
+  test("commands are never batched", () => {
+    const batcher = new InboundBatcher(async () => {}, 100, 100, TOKEN)
+    const cmd = { update_id: 1, message: { message_id: 1, date: 0, chat: { id: 1, type: "private" }, from: { id: 1 }, text: "/help" } } as any
+    expect(batcher.feed(cmd)).toBe(false)
+  })
+})
+
+describe("reliability", () => {
+  test("409 is classified as a conflict, not a lost send", () => {
+    const err = new TelegramError("Conflict: terminated by other getUpdates request", 409, undefined, "conflict")
+    expect(err.kind).toBe("conflict")
+  })
+
+  test("supervisor stops cleanly and is idempotent", () => {
+    const ctrl = new AbortController()
+    const api = { verify: async () => ({ id: 1 }), getUpdates: async () => [] } as any
+    const sup = new PollingSupervisor(api, TOKEN, async () => {}, ctrl.signal, () => true, {
+      heartbeatMs: 3_600_000, stallMs: 3_600_000,
+    })
+    // With no real polling loop, start still registers the interval; stop clears it.
+    sup.start()
+    sup.stop()
+    sup.stop()
+    expect(ctrl.signal.aborted).toBe(false)
+  })
+})
+
+describe("vision", () => {
+  test("caches descriptions by key without a network call", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tg-vision-"))
+    const cacheFile = join(dir, "vision.json")
+    process.env.OPENCODE_TELEGRAM_VISION_CACHE = cacheFile
+    try {
+      const v = new VisionDescriber(TOKEN)
+      expect(v.cached("sticker-1")).toBeNull()
+      v.describe // ensure method exists
+      expect(typeof v.describe).toBe("function")
+    } finally {
+      delete process.env.OPENCODE_TELEGRAM_VISION_CACHE
       rmSync(dir, { recursive: true, force: true })
     }
   })

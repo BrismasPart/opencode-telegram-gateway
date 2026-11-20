@@ -26,7 +26,9 @@ export function startPolling(
   signal: AbortSignal,
   token: string,
   isOwner: () => boolean = () => true,
-): void {
+  onProgress: () => void = () => {},
+  onError: (error: unknown) => void = () => {},
+): () => void {
   // A plugin reload re-runs setup without reliably invoking the old cleanup.
   // Stop any loop from a previous setup in this process before starting ours.
   if (activeStop) activeStop()
@@ -49,6 +51,7 @@ export function startPolling(
       try {
         const updates = await api.getUpdates(offset, own.signal)
         failures = 0
+        onProgress()
         diag("poll_ok", token, { updates: updates.length, offset })
         for (const update of updates) {
           if (own.signal.aborted) break
@@ -62,6 +65,7 @@ export function startPolling(
       } catch (e) {
         if (own.signal.aborted) break
         failures += 1
+        onError(e)
         diag("poll_error", token, { attempt: failures, error: (e as Error)?.name ?? "unknown", detail: safeError(e, token) })
         const delay = Math.min(60_000, 5_000 * 2 ** Math.min(failures - 1, 4))
         console.warn(`[telegram-gateway] polling error (${failures}): ${safeError(e, token)}; retry in ${delay / 1000}s`)
@@ -71,6 +75,7 @@ export function startPolling(
     if (activeStop === stop) activeStop = null
     signal.removeEventListener("abort", onOuterAbort)
   })()
+  return stop
 }
 
 function secretMatches(provided: string | undefined, expected: string): boolean {

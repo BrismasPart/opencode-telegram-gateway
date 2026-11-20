@@ -39,6 +39,24 @@ export interface GatewayConfig {
   mediaEnabled: boolean;
   /** Hard per-file download/upload cap in bytes. */
   maxMediaBytes: number;
+  /** Groups where the bot responds. Empty = all groups (still require authorization). */
+  allowedChats: Set<string>;
+  /** Forum topic ids where the bot responds. Empty = all topics. */
+  allowedTopics: Set<string>;
+  /** Thread ids to always ignore. */
+  ignoredThreads: Set<string>;
+  /** In groups, require an @mention or reply-to-bot to trigger. */
+  requireMention: boolean;
+  /** Outside allowed chats, respond only to explicit @mention. */
+  guestMode: boolean;
+  /** Chats/topics exempt from require_mention. */
+  freeResponseChats: Set<string>;
+  /** Multi-bot groups: a leading @mention of another bot silences this one. */
+  exclusiveBotMentions: boolean;
+  /** Merge client-split text within this window (ms). 0 disables. */
+  textBatchMs: number;
+  /** Merge photo bursts/albums within this window (ms). 0 disables. */
+  mediaBatchMs: number;
   /** Render agent replies as MarkdownV2 (plain fallback on parse error). */
   markdown: boolean;
   /** Path to the persisted per-chat flood-window file. */
@@ -115,6 +133,10 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
 
   const adminUsers = parseCsv(process.env.OPENCODE_TELEGRAM_ADMIN_USERS)
   const userCommands = parseCsv(process.env.OPENCODE_TELEGRAM_USER_COMMANDS ?? "help,whoami,status,model,models")
+  const boolEnv = (name: string, fallback: boolean) => {
+    const v = process.env[name]?.trim().toLowerCase()
+    return v === undefined ? fallback : v !== "false" && v !== "0" && v !== "no"
+  }
 
   return {
     token,
@@ -134,6 +156,15 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     commandMenuMax: intEnv("OPENCODE_TELEGRAM_COMMAND_MENU_MAX", 60, 1, 100),
     mediaEnabled: (process.env.OPENCODE_TELEGRAM_MEDIA ?? "true").toLowerCase() !== "false",
     maxMediaBytes: intEnv("OPENCODE_TELEGRAM_MAX_MEDIA_BYTES", 20 * 1024 * 1024, 1024, 100 * 1024 * 1024),
+    allowedChats: parseCsv(process.env.TELEGRAM_ALLOWED_CHATS),
+    allowedTopics: parseCsv(process.env.TELEGRAM_ALLOWED_TOPICS),
+    ignoredThreads: parseCsv(process.env.TELEGRAM_IGNORED_THREADS),
+    requireMention: boolEnv("TELEGRAM_REQUIRE_MENTION", false),
+    guestMode: boolEnv("TELEGRAM_GUEST_MODE", false),
+    freeResponseChats: parseCsv(process.env.TELEGRAM_FREE_RESPONSE_CHATS),
+    exclusiveBotMentions: boolEnv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", true),
+    textBatchMs: intEnv("OPENCODE_TELEGRAM_TEXT_BATCH_MS", 1200, 0, 5000),
+    mediaBatchMs: intEnv("OPENCODE_TELEGRAM_MEDIA_BATCH_MS", 800, 0, 5000),
     markdown: (process.env.OPENCODE_TELEGRAM_MARKDOWN ?? "true").toLowerCase() !== "false",
     floodFile: (process.env.OPENCODE_TELEGRAM_FLOOD_FILE ?? "").trim() || undefined,
     maxTextChars: intEnv("OPENCODE_TELEGRAM_MAX_CHARS", 4000, 100, 4096),

@@ -72,7 +72,7 @@ export class TelegramError extends Error {
     message: string,
     readonly status: number | undefined,
     readonly retryAfter: number | undefined,
-    readonly kind: "refused" | "flood" | "lost" | "server" | "local",
+    readonly kind: "refused" | "flood" | "lost" | "server" | "local" | "conflict",
   ) {
     super(message)
   }
@@ -84,6 +84,9 @@ function classify(res: Response | undefined, data: any, error: unknown): Telegra
   }
   const status = res?.status
   const description = data?.description ?? (error instanceof Error ? error.message : String(error))
+  if (status === 409 || /conflict|terminated by other getupdates/i.test(String(description))) {
+    return new TelegramError(redact(String(description), ""), status, undefined, "conflict")
+  }
   if (status === 400 || status === 401 || status === 403 || status === 404) {
     return new TelegramError(redact(String(description), ""), status, undefined, "refused")
   }

@@ -30,6 +30,17 @@ Based on Hermes Gateway.
   fallback on entity-parse errors — never on transport errors.
 - **Persisted flood windows**: per-chat 429 cooldowns clamped to 1–300 s and
   written to a 0600 file; surviving restarts, checked before every send.
+- **Polling supervision**: heartbeat (90 s `getMe` probe), stall watchdog
+  (150 s without progress), and reconnect ladders (network 10× 5→60 s,
+  conflict 5× 20→60 s). The single-writer lock is refreshed by poll progress,
+  so a torn-down instance cannot block a replacement.
+- **Vision**: optional sticker/image descriptions via an OpenAI-compatible
+  vision endpoint, cached by `file_unique_id` in a 0600 file.
+- **Group gating** (WHEN to answer, separate from authorization): `allowed_chats`,
+  `allowed_topics`, `ignored_threads`, `require_mention`, `guest_mode`,
+  `exclusive_bot_mentions`, free-response chats.
+- **Inbound batching**: merges client-split text and photo bursts into one turn
+  (commands are never batched); cancel-safe on shutdown.
 - **Sessions (admin only)**: `/sessions` lists Telegram-bound sessions,
   `/sessions all` lists every OpenCode session, `/sessions search <q>` filters
   by title. Each row is numbered; `/resume <number>` resumes by the last
@@ -39,7 +50,7 @@ Based on Hermes Gateway.
 
 ## Load the plugin
 
-Either drop it in `.opencode/plugins/opencode-telegram-gateway/` (auto-loaded), or add
+Either drop it in `.opencode/plugins/telegram-gateway/` (auto-loaded), or add
 to `opencode.json(c)`:
 
 ```jsonc
@@ -92,9 +103,23 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `OPENCODE_TELEGRAM_CACHE_DIR` | no | system temp | Inbound media cache root. |
 | `OPENCODE_TELEGRAM_MARKDOWN` | no | `true` | Render replies as MarkdownV2 with plain fallback. |
 | `OPENCODE_TELEGRAM_FLOOD_FILE` | no | data dir | Persisted per-chat flood-window file. |
+| `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables sticker/image descriptions. |
+| `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / see src | Vision credentials/model/prompt. |
+| `OPENCODE_TELEGRAM_VISION_IMAGES` | no | `false` | Also describe ordinary images (else attached directly). |
+| `OPENCODE_TELEGRAM_VISION_CACHE` | no | data dir | Sticker vision cache file. |
+| `TELEGRAM_ALLOWED_CHATS` / `_ALLOWED_TOPICS` / `_IGNORED_THREADS` | no | empty | Group/topic trigger gates (CSV ids). |
+| `TELEGRAM_REQUIRE_MENTION` / `_GUEST_MODE` / `_EXCLUSIVE_BOT_MENTIONS` | no | false / false / true | Group mention behavior. |
+| `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty | Chats exempt from `require_mention`. |
+| `OPENCODE_TELEGRAM_TEXT_BATCH_MS` / `_MEDIA_BATCH_MS` | no | 1200 / 800 | Text/photo batch windows (0 disables). |
 | `OPENCODE_TELEGRAM_MAX_CHARS` | no | `4000` | Outbound UTF-16 chunk size (≤4096). |
 
-Generate a secret: `openssl rand -hex 32`.
+A fully-documented `.env.example` with **all 41 options** ships with the
+plugin — copy it to the 0600 file and edit:
+```sh
+cp .env.example ~/.config/opencode/telegram-gateway.env
+chmod 600 ~/.config/opencode/telegram-gateway.env
+```
+Generate a webhook secret with `openssl rand -hex 32`.
 
 ## Security model
 
@@ -157,7 +182,8 @@ re-deliver the same `update_id` to confirm dedup.
   keep strangers fully silent, set `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR=ignore`.
 - Media: images/text/PDF are model-visible; audio/video are cached with path
   notes (enable STT for voice). No albums/batching, media tags/cover art,
-  forced JPEG precompression, or TTS output. Formatting is still plain text.
+  forced JPEG precompression, or TTS output. Replies render as MarkdownV2 (not
+  native rich messages).
 - One process per bot token (Telegram forbids concurrent pollers).
 - Webhook listener is plain HTTP; TLS must terminate at a reverse proxy.
 - Approval prompts appear in the OpenCode TUI, not inline in Telegram.

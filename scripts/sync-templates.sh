@@ -44,6 +44,7 @@ for skill in "${UNIQUE[@]}"; do
   cp -R "${PLUGIN_DIR}/test" "${skill}/templates/test"
   cp "${PLUGIN_DIR}/package.json" "${skill}/templates/package.json"
   cp "${PLUGIN_DIR}/README.md" "${skill}/templates/README.md"
+  cp "${PLUGIN_DIR}/.env.example" "${skill}/templates/.env.example"
 
   # sync-templates.sh itself must not land inside templates/scripts/ recursively.
   rm -f "${skill}/templates/scripts/sync-templates.sh"

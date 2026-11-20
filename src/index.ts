@@ -24,6 +24,10 @@ import { messageMedia, cacheTelegramFile, attachmentFor, mediaNote } from "./med
 import { parseMediaDirectives, sendMediaFile } from "./media_outbound.js"
 import { transcribe } from "./stt.js"
 import { FloodGuard } from "./flood.js"
+import { PollingSupervisor } from "./reliability.js"
+import { VisionDescriber, visionConfig } from "./vision.js"
+import { shouldProcess } from "./gating.js"
+import { InboundBatcher } from "./batching.js"
 import { toMarkdownV2 } from "./markdown.js"
 
 type PluginCtx = {
@@ -79,6 +83,7 @@ export default {
     const controller = new AbortController()
     const lastDenyNotice = new Map<string, number>()
     const forumMenu = new ForumMenuGuard(api, token, menuRowsForForum(config.commandMenuMax))
+    const vision = visionConfig() ? new VisionDescriber(token) : null
 
     const stopStreaming = config.streaming ? startStreaming(ctx, config, active, api) : () => {}
 
@@ -148,6 +153,15 @@ export default {
       // Two-layer authorization: dedup first, allowlist second.
       if (await receipts.seen(update.update_id)) return
       await receipts.mark(update.update_id)
+
+      // Group trigger gates (WHEN to answer), separate from authorization.
+      if (update.message) {
+        const gate = shouldProcess(msg, me.username, config)
+        if (!gate.process) {
+          diag("gate_skip", token, { chat: chatId, reason: gate.reason })
+          return
+        }
+      }
 
       if (!config.allowedUsers.has(userId)) {
         // Log IDs only, never message content.
@@ -220,7 +234,17 @@ export default {
             const transcript = await transcribe(cached.path, token)
             notes.push(transcript ? `[Voice transcript] ${transcript}` : mediaNote(cached))
           } else {
-            files.push(attachmentFor(cached, mediaNote(cached)))
+            // Stickers (and optionally images) can be described by the vision
+            // provider; the description is cached by file_unique_id.
+            const uniqueId = item.label === "sticker" ? msg.sticker?.file_unique_id : undefined
+            const wantsVision = vision && (item.label === "sticker" || visionConfig()?.images)
+            const description = wantsVision ? await vision!.describe(cached.path, uniqueId, msg.sticker?.emoji) : null
+            if (description) {
+              notes.push(`[Sticker: ${description}]`)
+              diag("vision_note", token, { kind: cached.kind })
+            } else {
+              files.push(attachmentFor(cached, mediaNote(cached)))
+            }
             if (cached.kind === "binary" || cached.kind === "audio" || cached.kind === "video") notes.push(mediaNote(cached))
           }
         }
@@ -273,17 +297,32 @@ export default {
       }
     }
 
+    // Batch client-split text / photo bursts before they reach the agent.
+    const batcher = new InboundBatcher(handleUpdate, config.textBatchMs, config.mediaBatchMs, token)
+    const admit: (u: Update) => Promise<void> = async (u) => {
+      if (!batcher.feed(u)) await handleUpdate(u)
+    }
+
     let stopTransport: () => void = () => {}
+    let supervisor: PollingSupervisor | null = null
     let lock: PollerLock | null = null
     if (config.webhookUrl) {
-      stopTransport = await startWebhook(config, api, handleUpdate)
+      stopTransport = await startWebhook(config, api, admit)
     } else {
       // Telegram allows only one getUpdates poller per token. A global plugin
       // loads in every OpenCode location, so elect a single owner.
       const startPollingHere = (owner: PollerLock) => {
         diag("poll_start", token)
-        startPolling(api, handleUpdate, controller.signal, token, () => owner.isOwner())
-        console.info("[telegram-gateway] polling started")
+        supervisor = new PollingSupervisor(api, token, admit, controller.signal, () => owner.isOwner(), {
+          onProgress: () => owner.refresh(),
+          onFatal: (reason) => {
+            diag("polling_fatal", token, { reason })
+            lock?.release()
+            lock = null
+          },
+        })
+        supervisor.start()
+        console.info("[telegram-gateway] polling started (with watchdog)")
       }
       lock = acquirePollerLock(token)
       if (lock) {
@@ -307,7 +346,9 @@ export default {
     }
 
     return () => {
+      batcher.close()
       stopTransport()
+      supervisor?.stop()
       stopStreaming()
       lock?.release()
       active.clear()

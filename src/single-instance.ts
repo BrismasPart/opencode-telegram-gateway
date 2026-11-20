@@ -5,6 +5,12 @@
  * create several instances. Telegram rejects concurrent getUpdates pollers
  * with 409. This file lock ensures only one instance polls a given token.
  * No token material is written to disk — only a truncated hash.
+ *
+ * IMPORTANT: the lock is kept fresh by POLL PROGRESS, not by its own timer.
+ * A torn-down plugin instance may leave a heartbeat interval running; a
+ * standalone timer would keep the lock alive forever and block a new owner.
+ * The live poller calls `refresh()` on every successful getUpdates round-trip;
+ * if it dies, the lock simply goes stale and the next instance takes over.
  */
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { createHash, randomUUID } from "node:crypto"
@@ -12,11 +18,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 const LOCK_DIR = join(homedir(), ".local", "state", "opencode", "telegram-gateway-locks")
-// OpenCode reloads can tear down a plugin instance without running its
-// cleanup, so stale locks must expire quickly. Heartbeat well inside the
-// stale window so a live owner never gets displaced.
-const STALE_MS = 15_000
-const HEARTBEAT_MS = 5_000
+const STALE_MS = 30_000
 
 type LockRecord = { id: string; ts: number; pid: number }
 
@@ -33,6 +35,8 @@ export interface PollerLock {
   release(): void
   /** False once another instance has taken over this lock. */
   isOwner(): boolean
+  /** Refresh the lock timestamp — call from polling progress. */
+  refresh(): void
 }
 
 export function acquirePollerLock(token: string, lockDir: string = LOCK_DIR): PollerLock | null {
@@ -59,16 +63,6 @@ export function acquirePollerLock(token: string, lockDir: string = LOCK_DIR): Po
     write(now)
   }
 
-  const timer = setInterval(() => {
-    try {
-      const current = readRecord(path)
-      if (current?.id === id) write(Date.now())
-    } catch {
-      // Ignore heartbeat failures; the next poll will surface real errors.
-    }
-  }, HEARTBEAT_MS)
-  timer.unref?.()
-
   return {
     isOwner() {
       try {
@@ -77,8 +71,14 @@ export function acquirePollerLock(token: string, lockDir: string = LOCK_DIR): Po
         return false
       }
     },
+    refresh() {
+      try {
+        if (readRecord(path)?.id === id) write(Date.now())
+      } catch {
+        // Best effort.
+      }
+    },
     release() {
-      clearInterval(timer)
       try {
         if (readRecord(path)?.id === id) unlinkSync(path)
       } catch {
