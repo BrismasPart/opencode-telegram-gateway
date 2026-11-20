@@ -57,6 +57,8 @@ export interface CommandEnv {
   sessions: SessionBridge
   userId: string
   chatId: string
+  /** Routing key for this chat/user/topic (drives session isolation). */
+  sessionKey: string
   botId: number
   title: string
 }
@@ -67,10 +69,24 @@ export interface ParsedCommand {
 }
 
 /** Parse "/cmd arg" and "/cmd@BotName arg". Returns null for plain text. */
-export function parseCommand(text: string): ParsedCommand | null {
-  const trimmed = text.trim()
+export function parseCommand(text: string, botUsername?: string): ParsedCommand | null {
+  let trimmed = text.trim()
   if (!trimmed.startsWith("/")) return null
-  const match = /^\/([a-zA-Z][a-zA-Z0-9_]*)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/.exec(trimmed)
+
+  // Telegram group commands may carry an @botname mention attached to the
+  // command token (/model@Bot x) OR as a separate token before/after the
+  // arguments (/model @Bot x, /model x @Bot). Strip it everywhere so it never
+  // leaks into the argument (e.g. being parsed as part of a model name).
+  if (botUsername) {
+    const bot = botUsername.replace(/^@/, "").toLowerCase()
+    const esc = bot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    trimmed = trimmed.replace(new RegExp(`@${esc}\\b`, "gi"), "").replace(/\s+/g, " ").trim()
+  }
+  // Also strip a generic attached @suffix on the command token (covers the
+  // case where botUsername was not supplied).
+  trimmed = trimmed.replace(/^(\/[a-zA-Z][a-zA-Z0-9_]*)@[A-Za-z0-9_]+/, "$1")
+
+  const match = /^\/([a-zA-Z][a-zA-Z0-9_]*)(?:\s+([\s\S]*))?$/.exec(trimmed)
   if (!match) return null
   return { name: match[1].toLowerCase(), arg: (match[2] ?? "").trim() }
 }
@@ -97,7 +113,7 @@ const HELP_TEXT = "Commands:\n" + COMMAND_CATALOG.map((c) => `/${c.name} — ${c
 
 /** Execute an allowed command. Returns the text to send back to Telegram. */
 export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<string> {
-  const { ctx, config, sessions, userId, chatId, botId, title } = env
+  const { ctx, config, sessions, userId, chatId, sessionKey, botId, title } = env
   switch (cmd.name) {
     case "help":
       return HELP_TEXT
@@ -108,7 +124,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
     }
 
     case "status": {
-      const sessionID = await sessions.current(chatId)
+      const sessionID = await sessions.current(sessionKey)
       const admin = config.adminUsers.size === 0 || config.adminUsers.has(userId)
       return [
         `Gateway status: connected to Telegram as bot ${botId}`,
@@ -133,7 +149,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
 
         if (mode === "all" || mode === "search") {
           const all = await sessions.list(mode === "search" && query ? { search: query, limit: 50 } : { limit: 50 })
-          const currentId = await sessions.current(chatId)
+          const currentId = await sessions.current(sessionKey)
           rows = all.map((info: any) => {
             const t = info?.tokens ?? {}
             return {
@@ -156,7 +172,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
             }
             cursor = page.next
           } while (cursor)
-          const currentId = await sessions.current(chatId)
+          const currentId = await sessions.current(sessionKey)
           for (const { chatId: c, sessionID } of entries) {
             try {
               const raw = await ctx.session.get({ sessionID })
@@ -183,7 +199,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
           `${mode === "all" ? "All" : mode === "search" ? `Search "${query}"` : "Telegram"} sessions (${rows.length}):`,
         ]
         shown.forEach((r, i) => {
-          const suffix = `${r.chatId ? ` | chat ${r.chatId}` : ""}${r.model ? ` | ${r.model}` : ""}${r.tokens ? ` | ~${r.tokens >= 1000 ? `${(r.tokens / 1000).toFixed(1)}k` : r.tokens} tok` : ""}${r.current ? " | ← current" : ""}`
+          const suffix = `${r.chatId ? ` | key ${r.chatId}` : ""}${r.model ? ` | ${r.model}` : ""}${r.tokens ? ` | ~${r.tokens >= 1000 ? `${(r.tokens / 1000).toFixed(1)}k` : r.tokens} tok` : ""}${r.current ? " | ← current" : ""}`
           lines.push(`${i + 1}. ${r.id} | ${r.title}${suffix}`)
         })
         if (rows.length > shown.length) lines.push(`…and ${rows.length - shown.length} more`)
@@ -210,7 +226,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
           }
           sessionID = index[n - 1]
         }
-        const ok = await sessions.bind(chatId, sessionID)
+        const ok = await sessions.bind(sessionKey, sessionID)
         if (!ok) return `Session ${sessionID} not found.`
         return `Resumed session ${sessionID}. Your next message continues that conversation.`
       } catch (e) {
@@ -219,12 +235,12 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
     }
 
     case "new": {
-      await sessions.rotate(chatId, title)
+      await sessions.rotate(sessionKey, title)
       return "Started a fresh session. Your next message begins a new conversation."
     }
 
     case "stop": {
-      const sessionID = await sessions.current(chatId)
+      const sessionID = await sessions.current(sessionKey)
       if (!sessionID) return "No active turn to interrupt."
       await sessions.interrupt(sessionID)
       return "Interrupted the current turn. The session is preserved."
@@ -242,7 +258,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
         if (parts.length !== 2) return "Usage: /model provider/model (see /models)"
         const providerID = parts[0]
         const modelID = parts.slice(1).join("/")
-        const sessionID = await sessions.getOrCreate(chatId, title)
+        const sessionID = await sessions.getOrCreate(sessionKey, title)
         await ctx.session.switchModel({ sessionID, model: { providerID, id: modelID } })
         return `Model switched to ${providerID}/${modelID} for this session.`
       } catch (e) {
@@ -267,7 +283,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
     case "agent": {
       if (!cmd.arg) return "Usage: /agent <name> (see /agents)"
       try {
-        const sessionID = await sessions.getOrCreate(chatId, title)
+        const sessionID = await sessions.getOrCreate(sessionKey, title)
         await ctx.session.switchAgent({ sessionID, agent: cmd.arg })
         return `Agent switched to ${cmd.arg} for this session.`
       } catch (e) {
@@ -297,7 +313,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
 
     case "context": {
       try {
-        const sessionRaw = await ctx.session.get({ sessionID: await sessions.current(chatId) ?? "" })
+        const sessionRaw = await ctx.session.get({ sessionID: await sessions.current(sessionKey) ?? "" })
         const info: any = (sessionRaw as any)?.data ?? sessionRaw
         const t = info?.tokens ?? {}
         const input = t.input ?? 0
@@ -336,7 +352,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
 
     case "effort": {
       try {
-        const sessionID = await sessions.current(chatId)
+        const sessionID = await sessions.current(sessionKey)
         if (!sessionID) return "No active session. Send a message first."
         const raw = await ctx.session.get({ sessionID })
         const info: any = (raw as any)?.data ?? raw
@@ -379,7 +395,7 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
     }
 
     case "compact": {
-      const sessionID = await sessions.current(chatId)
+      const sessionID = await sessions.current(sessionKey)
       if (!sessionID) return "No active session to compact."
       await ctx.session.compact({ sessionID })
       return "Compaction requested. It will run at the next step boundary."

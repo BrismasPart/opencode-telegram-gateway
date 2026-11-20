@@ -45,8 +45,8 @@ export class SessionBridge {
     private readonly config: GatewayConfig,
   ) {}
 
-  async getOrCreate(chatId: string, title: string): Promise<string> {
-    const key = `${SESSION_PREFIX}${chatId}`
+  async getOrCreate(sessionKey: string, title: string): Promise<string> {
+    const key = `${SESSION_PREFIX}${sessionKey}`
     const existing = await this.ctx.storage.get<string>(key)
     if (existing) {
       try {
@@ -77,9 +77,9 @@ export class SessionBridge {
     return sessionID
   }
 
-  /** The current session id for a chat, if one is bound. */
-  async current(chatId: string): Promise<string | null> {
-    const key = `${SESSION_PREFIX}${chatId}`
+  /** The current session id for a routing key, if one is bound. */
+  async current(sessionKey: string): Promise<string | null> {
+    const key = `${SESSION_PREFIX}${sessionKey}`
     const id = await this.ctx.storage.get<string>(key)
     if (!id) return null
     try {
@@ -91,19 +91,19 @@ export class SessionBridge {
   }
 
   /** Rotate to a fresh session (/new). Does not delete the old session. */
-  async rotate(chatId: string, title: string): Promise<string> {
-    await this.ctx.storage.remove(`${SESSION_PREFIX}${chatId}`)
-    return this.getOrCreate(chatId, title)
+  async rotate(sessionKey: string, title: string): Promise<string> {
+    await this.ctx.storage.remove(`${SESSION_PREFIX}${sessionKey}`)
+    return this.getOrCreate(sessionKey, title)
   }
 
-  /** Bind this chat to an existing session (/resume). Verifies it exists first. */
-  async bind(chatId: string, sessionID: string): Promise<boolean> {
+  /** Bind this routing key to an existing session (/resume). Verifies first. */
+  async bind(sessionKey: string, sessionID: string): Promise<boolean> {
     try {
       await this.ctx.session.get({ sessionID })
     } catch {
       return false
     }
-    await this.ctx.storage.set(`${SESSION_PREFIX}${chatId}`, sessionID)
+    await this.ctx.storage.set(`${SESSION_PREFIX}${sessionKey}`, sessionID)
     return true
   }
 

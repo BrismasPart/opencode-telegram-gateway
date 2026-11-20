@@ -351,6 +351,42 @@ export class TelegramApi {
     logMethod("setMyCommands", true, this.token)
   }
 
+  /**
+   * Send a Bot API 10.1 native Rich Message with raw GFM markdown.
+   * The rich_message object is passed as JSON (not URL params).
+   * Caller handles capability/parse errors by falling back to MarkdownV2.
+   */
+  async sendRichMessage(chatId: string, markdown: string, replyToMessageId?: number): Promise<number> {
+    this.floodCheck(chatId)
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      rich_message: { markdown },
+    }
+    if (replyToMessageId) body.reply_parameters = { message_id: replyToMessageId }
+    try {
+      const msg = await this.callJson<{ message_id: number }>("sendRichMessage", body, 30_000)
+      logMethod("sendRichMessage", true, this.token)
+      return msg.message_id
+    } catch (e) {
+      this.noteFlood(chatId, e)
+      logMethod("sendRichMessage", false, this.token, safeError(e, this.token))
+      throw e
+    }
+  }
+
+  /** True when the Bot API doesn't support rich messages (latch off permanently). */
+  static richUnavailable(error: unknown): boolean {
+    const status = (error as TelegramError)?.status
+    const msg = String((error as Error)?.message ?? error ?? "").toLowerCase()
+    return status === 404 || /method not found|unknown method/i.test(msg)
+  }
+
+  /** True when rich markdown could not be parsed — fall back for THIS reply only. */
+  static richParseError(error: unknown): boolean {
+    const msg = String((error as Error)?.message ?? error ?? "").toUpperCase()
+    return /RICH_MESSAGE_|RICH_TEXT_|CAN'T PARSE/i.test(msg)
+  }
+
   /** Answer an inline query. Empty results with is_personal are the fail-closed response. */
   async answerInlineQuery(
     queryId: string,

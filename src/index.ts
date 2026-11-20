@@ -28,6 +28,8 @@ import { PollingSupervisor } from "./reliability.js"
 import { VisionDescriber, visionConfig } from "./vision.js"
 import { shouldProcess } from "./gating.js"
 import { InboundBatcher } from "./batching.js"
+import { sessionKeyFor, sessionLabel } from "./session_routing.js"
+import { shouldUseRich } from "./rich.js"
 import { toMarkdownV2 } from "./markdown.js"
 
 type PluginCtx = {
@@ -84,6 +86,7 @@ export default {
     const lastDenyNotice = new Map<string, number>()
     const forumMenu = new ForumMenuGuard(api, token, menuRowsForForum(config.commandMenuMax))
     const vision = visionConfig() ? new VisionDescriber(token) : null
+    let richDisabled = false // latched off on a capability error (method not found)
 
     const stopStreaming = config.streaming ? startStreaming(ctx, config, active, api) : () => {}
 
@@ -100,6 +103,26 @@ export default {
         await sendMediaFile(api, chatId, directive, config.maxMediaBytes, token)
       }
       const raw = parsed.text || "_(empty response)_"
+
+      // Native Rich Messages lane: raw GFM markdown rendered by Telegram.
+      if (shouldUseRich(raw, config.richMessages, richDisabled)) {
+        try {
+          await api.sendRichMessage(chatId, raw, replyTo)
+          diag("rich_sent", token, { chat: chatId, bytes: new TextEncoder().encode(raw).byteLength })
+          return
+        } catch (e) {
+          if (TelegramApi.richUnavailable(e)) {
+            richDisabled = true
+            diag("rich_disabled", token, { error: (e as Error)?.name ?? "unknown" })
+          } else if (TelegramApi.richParseError(e)) {
+            diag("rich_parse_fallback", token)
+            // fall through to MarkdownV2 for this reply
+          } else {
+            throw e // network/flood — do not duplicate via a different lane
+          }
+        }
+      }
+
       const formatted = config.markdown ? toMarkdownV2(raw) : raw
       const chunks = splitByUtf16(formatted, config.maxTextChars)
       const plainChunks = splitByUtf16(raw, config.maxTextChars)
@@ -199,10 +222,12 @@ export default {
       }
 
       const text = (msg.text ?? "").trim()
+      const sessionKey = sessionKeyFor(msg, config, userId)
+      const sessionTitle = sessionLabel(msg, sessionKey)
 
       // Slash commands: authorized user, THEN a separate command-ACL check.
       // Never let a command reach the agent as a prompt.
-      const cmd = parseCommand(text === "/start" ? "/help" : text)
+      const cmd = parseCommand(text === "/start" ? "/help" : text, me.username)
       if (cmd) {
         if (!commandAllowed(cmd.name, userId, config)) {
           diag("command_denied", token, { user: userId, command: cmd.name })
@@ -212,7 +237,7 @@ export default {
         diag("command", token, { user: userId, command: cmd.name })
         try {
           const reply = await runCommand(cmd, {
-            ctx, config, sessions, userId, chatId, botId: me.id, title: `Telegram ${msg.chat.type} ${chatId}`,
+            ctx, config, sessions, userId, chatId, sessionKey, botId: me.id, title: sessionTitle,
           })
           await deliver(chatId, reply, msg.message_id)
         } catch (e) {
@@ -255,11 +280,10 @@ export default {
         return
       }
 
-      const title = `Telegram ${msg.chat.type} ${chatId}`
-      const sessionID = await sessions.getOrCreate(chatId, title)
+      const sessionID = await sessions.getOrCreate(sessionKey, sessionTitle)
 
       let previewId: number | undefined
-      if (config.streaming) {
+      if (config.streaming && !config.richMessages) {
         try {
           previewId = await api.sendText(chatId, "…", msg.message_id)
           active.set(sessionID, { chatId, messageId: previewId, buffer: "", lastEditAt: Date.now() })

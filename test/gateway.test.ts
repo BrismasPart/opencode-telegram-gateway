@@ -14,9 +14,11 @@ import { parseMediaDirectives, uploadPlan } from "../src/media_outbound.js"
 import { toMarkdownV2, escapeMdv2, isParseError } from "../src/markdown.js"
 import { FloodGuard } from "../src/flood.js"
 import { PollingSupervisor } from "../src/reliability.js"
-import { TelegramError } from "../src/telegram.js"
+import { TelegramError, TelegramApi } from "../src/telegram.js"
 import { VisionDescriber } from "../src/vision.js"
 import { shouldProcess } from "../src/gating.js"
+import { sessionKeyFor, sessionLabel } from "../src/session_routing.js"
+import { needsRich, richFits, shouldUseRich } from "../src/rich.js"
 import { InboundBatcher } from "../src/batching.js"
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -165,6 +167,16 @@ describe("slash commands", () => {
     expect(parseCommand("just text")).toBeNull()
   })
 
+  test("strips own bot mention wherever it appears, never from the model arg", () => {
+    const bot = "Frisco_opencode_bot"
+    expect(parseCommand("/model@Frisco_opencode_bot anthropic/claude", bot)).toEqual({ name: "model", arg: "anthropic/claude" })
+    expect(parseCommand("/model anthropic/claude @Frisco_opencode_bot", bot)).toEqual({ name: "model", arg: "anthropic/claude" })
+    expect(parseCommand("/model @Frisco_opencode_bot anthropic/claude", bot)).toEqual({ name: "model", arg: "anthropic/claude" })
+    expect(parseCommand("/models@Frisco_opencode_bot", bot)).toEqual({ name: "models", arg: "" })
+    // An unrelated mention is preserved (we only strip our own bot).
+    expect(parseCommand("/model @OtherBot x", bot)).toEqual({ name: "model", arg: "@OtherBot x" })
+  })
+
   test("gating off: every authorized user may run every command", () => {
     clear()
     process.env.TELEGRAM_BOT_TOKEN = TOKEN
@@ -287,7 +299,7 @@ describe("slash commands", () => {
       list: async (o: any) => (o.search ? all.filter((s) => s.title.toLowerCase().includes(o.search.toLowerCase())) : all),
       bind: async (chat: string, id: string) => { stored[`tg:session:${chat}`] = id; return true },
     } as any
-    const env = { ctx, config, sessions, userId: "111", chatId: "chat1", botId: 1, title: "t" }
+    const env = { ctx, config, sessions, userId: "111", chatId: "chat1", sessionKey: "chat1", botId: 1, title: "t" }
 
     const listing = await runCommand({ name: "sessions", arg: "all" }, env)
     expect(listing).toContain("1. ses_aaa | Alpha")
@@ -486,6 +498,65 @@ describe("flood windows", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("rich messages", () => {
+  test("detects constructs that benefit from native rendering", () => {
+    expect(needsRich("# Heading\ntext")).toBe(true)
+    expect(needsRich("| A | B |\n|---|---|\n| 1 | 2 |")).toBe(true)
+    expect(needsRich("- [ ] todo")).toBe(true)
+    expect(needsRich("$$E=mc^2$$")).toBe(true)
+    expect(needsRich("<details><summary>x</summary>y</details>")).toBe(true)
+    expect(needsRich("just plain text")).toBe(false)
+  })
+
+  test("respects the 32768-byte limit and the enabled/disabled gates", () => {
+    expect(richFits("a".repeat(100))).toBe(true)
+    expect(richFits("a".repeat(40_000))).toBe(false)
+    expect(shouldUseRich("# Title", true, false)).toBe(true)
+    expect(shouldUseRich("# Title", false, false)).toBe(false)
+    expect(shouldUseRich("# Title", true, true)).toBe(false)
+    expect(shouldUseRich("plain", true, false)).toBe(false)
+  })
+
+  test("classifies capability vs parse errors", () => {
+    expect(TelegramApi.richUnavailable({ status: 404, message: "Method not found" })).toBe(true)
+    expect(TelegramApi.richUnavailable({ status: 400, message: "Bad Request: RICH_MESSAGE_EMAIL_INVALID" })).toBe(false)
+    expect(TelegramApi.richParseError({ message: "Bad Request: RICH_MESSAGE_EMAIL_INVALID" })).toBe(true)
+  })
+})
+
+describe("session routing", () => {
+  const cfgWith = (overrides: Record<string, string>) => {
+    for (const k of ["OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER", "OPENCODE_TELEGRAM_THREAD_SESSIONS_PER_USER", "OPENCODE_TELEGRAM_DM_THREADS"]) delete process.env[k]
+    process.env.TELEGRAM_BOT_TOKEN = TOKEN
+    Object.assign(process.env, overrides)
+    return loadConfig({ secretsFile: false })
+  }
+  const dm = { message_id: 1, date: 0, chat: { id: 42, type: "private" }, from: { id: 42 } } as any
+  const group = { message_id: 1, date: 0, chat: { id: -1001, type: "supergroup" }, from: { id: 42 } } as any
+  const forum = { message_id: 2, date: 0, chat: { id: -1001, type: "supergroup", is_forum: true }, from: { id: 42 }, message_thread_id: 77 } as any
+
+  test("DMs are per chat, threads optional", () => {
+    expect(sessionKeyFor(dm, cfgWith({}), "42")).toBe("42")
+    expect(sessionKeyFor({ ...dm, message_thread_id: 5 } as any, cfgWith({}), "42")).toBe("42:t:5")
+    expect(sessionKeyFor({ ...dm, message_thread_id: 5 } as any, cfgWith({ OPENCODE_TELEGRAM_DM_THREADS: "shared" }), "42")).toBe("42")
+  })
+
+  test("groups are per-user by default, shareable via config", () => {
+    expect(sessionKeyFor(group, cfgWith({}), "42")).toBe("-1001:u:42")
+    expect(sessionKeyFor(group, cfgWith({ OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER: "false" }), "42")).toBe("-1001")
+  })
+
+  test("forum topics are shared by default, per-user via config", () => {
+    expect(sessionKeyFor(forum, cfgWith({}), "42")).toBe("-1001:t:77")
+    expect(sessionKeyFor(forum, cfgWith({ OPENCODE_TELEGRAM_THREAD_SESSIONS_PER_USER: "true" }), "42")).toBe("-1001:t:77:u:42")
+  })
+
+  test("labels include topic/user context", () => {
+    expect(sessionLabel(group, "-1001:u:42")).toContain("user 42")
+    expect(sessionLabel(forum, "-1001:t:77")).toContain("topic 77")
   })
 })
 

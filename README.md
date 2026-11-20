@@ -28,6 +28,10 @@ Based on Hermes Gateway.
 - **MarkdownV2 rendering**: agent replies are converted to Telegram MarkdownV2
   (bold/italic/code/links/quotes) with UTF-16 chunking and a plain-text
   fallback on entity-parse errors — never on transport errors.
+- **Native Rich Messages** (opt-in): Bot API 10.1 `sendRichMessage` sends raw
+  GFM markdown so headings, tables, task lists, code fences and math render
+  natively (32 KB limit). Falls back to MarkdownV2 on parse errors and latches
+  off if the method is unavailable. Streaming previews are off while enabled.
 - **Persisted flood windows**: per-chat 429 cooldowns clamped to 1–300 s and
   written to a 0600 file; surviving restarts, checked before every send.
 - **Polling supervision**: heartbeat (90 s `getMe` probe), stall watchdog
@@ -41,6 +45,10 @@ Based on Hermes Gateway.
   `exclusive_bot_mentions`, free-response chats.
 - **Inbound batching**: merges client-split text and photo bursts into one turn
   (commands are never batched); cancel-safe on shutdown.
+- **Per-user / per-topic sessions**: DMs are per chat (DM threads opt-in via
+  `dm_threads`), groups are per-user by default, forum topics are shared by
+  default. Tune with `OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER` and
+  `_THREAD_SESSIONS_PER_USER`.
 - **Sessions (admin only)**: `/sessions` lists Telegram-bound sessions,
   `/sessions all` lists every OpenCode session, `/sessions search <q>` filters
   by title. Each row is numbered; `/resume <number>` resumes by the last
@@ -102,6 +110,7 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `OPENCODE_TELEGRAM_STT_KEY` / `_MODEL` | no | — / `whisper-1` | STT credentials/model. |
 | `OPENCODE_TELEGRAM_CACHE_DIR` | no | system temp | Inbound media cache root. |
 | `OPENCODE_TELEGRAM_MARKDOWN` | no | `true` | Render replies as MarkdownV2 with plain fallback. |
+| `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `false` | Use Bot API 10.1 native Rich Messages for GFM constructs. |
 | `OPENCODE_TELEGRAM_FLOOD_FILE` | no | data dir | Persisted per-chat flood-window file. |
 | `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables sticker/image descriptions. |
 | `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / see src | Vision credentials/model/prompt. |
@@ -111,6 +120,9 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `TELEGRAM_REQUIRE_MENTION` / `_GUEST_MODE` / `_EXCLUSIVE_BOT_MENTIONS` | no | false / false / true | Group mention behavior. |
 | `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty | Chats exempt from `require_mention`. |
 | `OPENCODE_TELEGRAM_TEXT_BATCH_MS` / `_MEDIA_BATCH_MS` | no | 1200 / 800 | Text/photo batch windows (0 disables). |
+| `OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER` | no | `true` | Isolate group sessions per sender. |
+| `OPENCODE_TELEGRAM_THREAD_SESSIONS_PER_USER` | no | `false` | Isolate forum topic sessions per sender (else shared per topic). |
+| `OPENCODE_TELEGRAM_DM_THREADS` | no | `per_thread` | `per_thread` or `shared` (collapse DM threads). |
 | `OPENCODE_TELEGRAM_MAX_CHARS` | no | `4000` | Outbound UTF-16 chunk size (≤4096). |
 
 A fully-documented `.env.example` with **all 41 options** ships with the

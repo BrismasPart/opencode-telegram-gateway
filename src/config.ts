@@ -45,6 +45,12 @@ export interface GatewayConfig {
   allowedTopics: Set<string>;
   /** Thread ids to always ignore. */
   ignoredThreads: Set<string>;
+  /** Groups: isolate sessions per sender (true) or share per chat (false). */
+  groupSessionsPerUser: boolean;
+  /** Forum topics: isolate sessions per sender (true) or share per topic (false). */
+  threadSessionsPerUser: boolean;
+  /** DM threads: "per_thread" (default) or "shared" (collapse into one session). */
+  dmThreads: "per_thread" | "shared";
   /** In groups, require an @mention or reply-to-bot to trigger. */
   requireMention: boolean;
   /** Outside allowed chats, respond only to explicit @mention. */
@@ -59,6 +65,8 @@ export interface GatewayConfig {
   mediaBatchMs: number;
   /** Render agent replies as MarkdownV2 (plain fallback on parse error). */
   markdown: boolean;
+  /** Use Bot API 10.1 native Rich Messages (raw GFM markdown) for replies. */
+  richMessages: boolean;
   /** Path to the persisted per-chat flood-window file. */
   floodFile?: string;
   /** Max characters per outbound message (Telegram wire cap is 4096). */
@@ -159,6 +167,13 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     allowedChats: parseCsv(process.env.TELEGRAM_ALLOWED_CHATS),
     allowedTopics: parseCsv(process.env.TELEGRAM_ALLOWED_TOPICS),
     ignoredThreads: parseCsv(process.env.TELEGRAM_IGNORED_THREADS),
+    groupSessionsPerUser: boolEnv("OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER", true),
+    threadSessionsPerUser: boolEnv("OPENCODE_TELEGRAM_THREAD_SESSIONS_PER_USER", false),
+    dmThreads: (() => {
+      const v = (process.env.OPENCODE_TELEGRAM_DM_THREADS ?? "per_thread").trim().toLowerCase()
+      if (v !== "per_thread" && v !== "shared") throw new Error("OPENCODE_TELEGRAM_DM_THREADS must be 'per_thread' or 'shared'.")
+      return v
+    })(),
     requireMention: boolEnv("TELEGRAM_REQUIRE_MENTION", false),
     guestMode: boolEnv("TELEGRAM_GUEST_MODE", false),
     freeResponseChats: parseCsv(process.env.TELEGRAM_FREE_RESPONSE_CHATS),
@@ -166,6 +181,7 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     textBatchMs: intEnv("OPENCODE_TELEGRAM_TEXT_BATCH_MS", 1200, 0, 5000),
     mediaBatchMs: intEnv("OPENCODE_TELEGRAM_MEDIA_BATCH_MS", 800, 0, 5000),
     markdown: (process.env.OPENCODE_TELEGRAM_MARKDOWN ?? "true").toLowerCase() !== "false",
+    richMessages: boolEnv("OPENCODE_TELEGRAM_RICH_MESSAGES", false),
     floodFile: (process.env.OPENCODE_TELEGRAM_FLOOD_FILE ?? "").trim() || undefined,
     maxTextChars: intEnv("OPENCODE_TELEGRAM_MAX_CHARS", 4000, 100, 4096),
     strict: (process.env.OPENCODE_TELEGRAM_STRICT ?? "true").toLowerCase() !== "false",
