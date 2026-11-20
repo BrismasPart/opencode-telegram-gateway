@@ -273,7 +273,10 @@ export default {
       if (state.timer) clearTimeout(state.timer)
       approvals.delete(id)
       try {
-        await ctx.permission.reply({ sessionID: state.sessionID, requestID: state.requestID, decision: "reject" })
+        await ctx.permission.reply({
+          sessionID: state.sessionID, requestID: state.requestID, decision: "reject",
+          ...(state.location?.directory ? { location: state.location } : {}),
+        } as any)
         await api.editText(
           state.chatId, state.messageId,
           "⏱️ Approval timed out after 5 minutes — command did NOT run.",
@@ -298,7 +301,10 @@ export default {
       if (state.timer) clearTimeout(state.timer)
       approvals.delete(id)
       try {
-        await ctx.permission.reply({ sessionID: state.sessionID, requestID: state.requestID, decision: decisionFor(choice) })
+        await ctx.permission.reply({
+          sessionID: state.sessionID, requestID: state.requestID, decision: decisionFor(choice),
+          ...(state.location?.directory ? { location: state.location } : {}),
+        } as any)
         await api.editText(
           state.chatId, state.messageId,
           `${choice === "deny" ? "Denied" : "Approved"} by ${actorId} — command ${choice === "deny" ? "did NOT run" : "will run"}.`,
@@ -310,7 +316,10 @@ export default {
         diag("approval_error", token, { choice, error: (e as Error)?.name ?? "unknown", detail: safeError(e, token) })
         // Fail closed: try to reject so the command never runs.
         try {
-          await ctx.permission.reply({ sessionID: state.sessionID, requestID: state.requestID, decision: "reject" })
+          await ctx.permission.reply({
+          sessionID: state.sessionID, requestID: state.requestID, decision: "reject",
+          ...(state.location?.directory ? { location: state.location } : {}),
+        } as any)
         } catch { /* best effort */ }
         return false
       }
@@ -344,7 +353,8 @@ export default {
               const state: ApprovalState = {
                 id, sessionID: d.sessionID, requestID: d.id,
                 chatId: owner.chatId, ownerId: owner.ownerId, adminIds: config.adminUsers,
-                messageId: 0, canApprove: false, action: d.action ?? "tool", command, resolved: false,
+                messageId: 0, canApprove: false, action: d.action ?? "tool", command,
+                location: ev.location ?? undefined, resolved: false,
               }
               // Whole-command proof: show it in the card if it fits; otherwise
               // send a document first and only then enable Approve.
@@ -365,7 +375,7 @@ export default {
               } catch (e) {
                 diag("approval_send_failed", token, { error: (e as Error)?.name ?? "unknown" })
                 // Fail closed: reject so the command never runs.
-                try { await ctx.permission.reply({ sessionID: d.sessionID, requestID: d.id, decision: "reject" }) } catch { /* best effort */ }
+                try { await ctx.permission.reply({ sessionID: d.sessionID, requestID: d.id, decision: "reject", ...(ev.location?.directory ? { location: ev.location } : {}) } as any) } catch { /* best effort */ }
               }
             }
           }

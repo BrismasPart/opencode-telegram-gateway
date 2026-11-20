@@ -27,6 +27,8 @@ export type ApprovalState = {
   canApprove: boolean
   action: string
   command: string
+  /** Location from the permission.asked event — reply must be scoped to it. */
+  location?: { directory?: string; workspaceID?: string }
   resolved: boolean
   timer?: ReturnType<typeof setTimeout>
 }

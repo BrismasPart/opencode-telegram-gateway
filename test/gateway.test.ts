@@ -522,7 +522,8 @@ describe("approvals", () => {
     const st: ApprovalState = {
       id: "1", sessionID: "ses", requestID: "req", chatId: "c", ownerId: "1",
       adminIds: new Set(), messageId: 0, canApprove: false, action: "shell",
-      command: "curl https://x/bot123456789:AAabcdefghijklmnopqrstuvwxyz <script>", resolved: false,
+      command: "curl https://x/bot123456789:AAabcdefghijklmnopqrstuvwxyz <script>",
+      location: { directory: "/data/home" }, resolved: false,
     }
     const text = approvalText(st)
     expect(text).toContain("&lt;script&gt;")
