@@ -19,6 +19,7 @@ import { VisionDescriber } from "../src/vision.js"
 import { shouldProcess } from "../src/gating.js"
 import { sessionKeyFor, sessionLabel } from "../src/session_routing.js"
 import { needsRich, richFits, shouldUseRich } from "../src/rich.js"
+import { groupProviders, fitLabel, stripCommonPrefix, providerKeyboard, modelKeyboard, modelAt, type PickerState } from "../src/model_picker.js"
 import { InboundBatcher } from "../src/batching.js"
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -196,8 +197,6 @@ describe("slash commands", () => {
     }
     const reply = await runCommand({ name: "models", arg: "" }, { ctx, config } as any)
     expect(reply).toContain("anthropic/claude")
-    const show = await runCommand({ name: "model", arg: "" }, { ctx, config } as any)
-    expect(show).toContain("anthropic/claude")
   })
 
   test("runCommand context uses session tokens and model limit, excluding cache reads", async () => {
@@ -253,7 +252,7 @@ describe("slash commands", () => {
     expect(switched.length).toBe(1)
   })
 
-  test("gating on: admins get all, users get help/whoami/status/model, not new/stop", () => {
+  test("gating on: admins get all, users get help/whoami/status/models, not new/stop", () => {
     clear()
     process.env.TELEGRAM_BOT_TOKEN = TOKEN
     process.env.OPENCODE_TELEGRAM_ADMIN_USERS = "111"
@@ -263,7 +262,8 @@ describe("slash commands", () => {
     expect(commandAllowed("help", "222", cfg)).toBe(true)
     expect(commandAllowed("whoami", "222", cfg)).toBe(true)
     expect(commandAllowed("status", "222", cfg)).toBe(true)
-    expect(commandAllowed("model", "222", cfg)).toBe(true)
+    expect(commandAllowed("models", "222", cfg)).toBe(true)
+    expect(commandAllowed("model", "222", cfg)).toBe(false)
     expect(commandAllowed("new", "222", cfg)).toBe(false)
     expect(commandAllowed("stop", "222", cfg)).toBe(false)
     expect(commandAllowed("setagent", "222", cfg)).toBe(false)
@@ -497,6 +497,85 @@ describe("flood windows", () => {
       expect(existsSync(file)).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("model picker", () => {
+  const models = [
+    { id: "anthropic/claude-sonnet-5-5", providerID: "anthropic", name: "Claude" },
+    { id: "anthropic/claude-haiku", providerID: "anthropic" },
+    { id: "openai/gpt-6", providerID: "openai" },
+  ]
+  const baseState = (): PickerState => ({
+    msgId: 1, chatId: "c", sessionKey: "c", sessionID: "ses_test", ownerId: "42", adminIds: new Set(),
+    level: "providers", providerPage: 0, modelPage: 0, providers: groupProviders(models),
+  })
+
+  test("groups models by provider", () => {
+    const groups = groupProviders(models)
+    expect(groups.map((g) => g.name)).toEqual(["anthropic", "openai"])
+    expect(groups[0].models).toHaveLength(2)
+  })
+
+  test("fits labels to 44 chars keeping the tail", () => {
+    const short = fitLabel("short", 44)
+    expect(short).toBe("short")
+    const long = fitLabel("a".repeat(60), 20)
+    expect(long.length).toBeLessThanOrEqual(20)
+    expect(long).toContain("…")
+    expect(long.endsWith("a".repeat(9))).toBe(true)
+  })
+
+  test("strips a shared namespace prefix", () => {
+    expect(stripCommonPrefix(models.slice(0, 2))).toEqual(["claude-sonnet-5-5", "claude-haiku"])
+  })
+
+  test("provider keyboard has 2 buttons/row plus nav and cancel", () => {
+    const kb = providerKeyboard(baseState())
+    expect(kb.inline_keyboard.length).toBeGreaterThan(1)
+    expect(kb.inline_keyboard[0][0].callback_data).toMatch(/^mp:/)
+    const flat = kb.inline_keyboard.flat()
+    expect(flat.some((b) => b.text === "Cancel")).toBe(true)
+  })
+
+  test("model keyboard binds callbacks by index and validates bounds", () => {
+    const state = baseState()
+    state.provider = state.providers[0]
+    state.level = "models"
+    const kb = modelKeyboard(state)
+    expect(kb.inline_keyboard[0][0].callback_data).toBe("mm:0")
+    expect(modelAt(state, 0)?.id).toBe("anthropic/claude-sonnet-5-5")
+    expect(modelAt(state, 99)).toBeNull()
+  })
+
+  test("hides the page counter when there is only one page", () => {
+    const oneProvider = groupProviders([models[0]])
+    const state = baseState()
+    state.providers = oneProvider
+    const kb = providerKeyboard(state)
+    expect(kb.inline_keyboard.flat().some((b) => /\d+\/\d+/.test(b.text))).toBe(false)
+
+    state.provider = oneProvider[0]
+    state.level = "models"
+    const kb2 = modelKeyboard(state)
+    expect(kb2.inline_keyboard.flat().some((b) => /\d+\/\d+/.test(b.text))).toBe(false)
+  })
+
+  test("shows the page counter when there are multiple pages", () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({ id: `p${i}/m`, providerID: `p${i}` }))
+    const state = baseState()
+    state.providers = groupProviders(many)
+    const kb = providerKeyboard(state)
+    expect(kb.inline_keyboard.flat().some((b) => b.text === "1/2")).toBe(true)
+  })
+
+  test("callback data stays within 64 bytes", () => {
+    const kb = providerKeyboard(baseState())
+    for (const row of kb.inline_keyboard) {
+      for (const b of row) {
+        if (b.callback_data) expect(new TextEncoder().encode(b.callback_data).byteLength).toBeLessThanOrEqual(64)
+      }
     }
   })
 })

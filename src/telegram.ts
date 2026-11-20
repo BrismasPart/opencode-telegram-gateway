@@ -19,6 +19,7 @@ export type Update = {
   edited_message?: TelegramMessage
   channel_post?: TelegramMessage
   inline_query?: InlineQuery
+  callback_query?: CallbackQuery
 }
 
 export type TelegramMessage = {
@@ -65,7 +66,19 @@ export type InlineResult = {
 }
 
 /** Allowed updates used for both polling and webhook registration. */
-export const ALLOWED_UPDATES = '["message","edited_message","channel_post","inline_query"]'
+export const ALLOWED_UPDATES = '["message","edited_message","channel_post","inline_query","callback_query"]'
+
+/** Telegram inline-keyboard types (minimal subset needed by the picker). */
+export type InlineKeyboardButton = { text: string; callback_data?: string }
+export type InlineKeyboardMarkup = { inline_keyboard: InlineKeyboardButton[][] }
+
+export type CallbackQuery = {
+  id: string
+  from: { id: number; is_bot?: boolean; first_name?: string; username?: string }
+  message?: { message_id: number; chat: { id: number; type: string }; text?: string }
+  data?: string
+  chat_instance?: string
+}
 
 export class TelegramError extends Error {
   constructor(
@@ -289,11 +302,12 @@ export class TelegramApi {
    * ambiguous failures are returned as errors so the caller can surface them
    * rather than retrying into the penalty.
    */
-  async sendText(chatId: string, text: string, replyToMessageId?: number, parseMode?: string, plainFallback?: string): Promise<number> {
+  async sendText(chatId: string, text: string, replyToMessageId?: number, parseMode?: string, plainFallback?: string, replyMarkup?: InlineKeyboardMarkup): Promise<number> {
     this.floodCheck(chatId)
     const params: Record<string, string> = { chat_id: chatId, text }
     if (replyToMessageId) params.reply_parameters = JSON.stringify({ message_id: replyToMessageId })
     if (parseMode) params.parse_mode = parseMode
+    if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup)
     try {
       const msg = await this.call<{ message_id: number }>("sendMessage", params, undefined, 30_000)
       logMethod("sendMessage", true, this.token)
@@ -322,10 +336,11 @@ export class TelegramApi {
     }
   }
 
-  async editText(chatId: string, messageId: number, text: string, parseMode?: string, plainFallback?: string): Promise<void> {
+  async editText(chatId: string, messageId: number, text: string, parseMode?: string, plainFallback?: string, replyMarkup?: InlineKeyboardMarkup): Promise<void> {
     this.floodCheck(chatId)
     const params: Record<string, string> = { chat_id: chatId, message_id: String(messageId), text }
     if (parseMode) params.parse_mode = parseMode
+    if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup)
     try {
       await this.call("editMessageText", params, undefined, 30_000)
       logMethod("editMessageText", true, this.token)
@@ -340,6 +355,24 @@ export class TelegramApi {
       this.noteFlood(chatId, e)
       logMethod("editMessageText", false, this.token, safeError(e, this.token))
       throw err
+    }
+  }
+
+  /** Ack a callback query — always call this so the user's tap stops spinning. */
+  async answerCallback(id: string, text?: string): Promise<void> {
+    try {
+      await this.callJson("answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) })
+    } catch {
+      // Stale/expired query is non-fatal.
+    }
+  }
+
+  /** Delete a message (best effort — e.g. picker cancel). */
+  async deleteMessage(chatId: string, messageId: number): Promise<void> {
+    try {
+      await this.callJson("deleteMessage", { chat_id: chatId, message_id: messageId })
+    } catch {
+      // Non-fatal.
     }
   }
 

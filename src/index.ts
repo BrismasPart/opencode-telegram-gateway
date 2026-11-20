@@ -30,6 +30,10 @@ import { shouldProcess } from "./gating.js"
 import { InboundBatcher } from "./batching.js"
 import { sessionKeyFor, sessionLabel } from "./session_routing.js"
 import { shouldUseRich } from "./rich.js"
+import {
+  groupProviders, providerKeyboard, modelKeyboard, providerText, modelText,
+  modelAt, type PickerState, type PickerModel,
+} from "./model_picker.js"
 import { toMarkdownV2 } from "./markdown.js"
 
 type PluginCtx = {
@@ -84,6 +88,7 @@ export default {
     const active = new Map<string, ActiveTurn>()
     const controller = new AbortController()
     const lastDenyNotice = new Map<string, number>()
+    const pickerState = new Map<string, PickerState>() // one picker per chat
     const forumMenu = new ForumMenuGuard(api, token, menuRowsForForum(config.commandMenuMax))
     const vision = visionConfig() ? new VisionDescriber(token) : null
     let richDisabled = false // latched off on a capability error (method not found)
@@ -141,7 +146,137 @@ export default {
       }
     }
 
+    /** Build the model catalog and send the first provider page. */
+    const openModelPicker = async (chatId: string, userId: string, sessionKey: string, replyTo?: number) => {
+      try {
+        const raw = await ctx.model.list()
+        const models: PickerModel[] = (Array.isArray(raw) ? raw : (raw as any)?.data ?? []).map((m: any) => ({
+          id: m.modelID ?? m.id ?? "?",
+          name: m.name,
+          providerID: m.providerID ?? m.provider?.id ?? "unknown",
+        }))
+        if (!models.length) {
+          await deliver(chatId, "No models are available from configured providers.")
+          return
+        }
+        const providers = groupProviders(models)
+        const sessionID = await sessions.current(sessionKey)
+        if (!sessionID) {
+          await deliver(chatId, "No active session yet — send a message first, then try /models.")
+          return
+        }
+        const defaultRaw = await ctx.model.default()
+        const d = (defaultRaw as any)?.data ?? defaultRaw
+        const current = d ? `${d.providerID ?? "?"}/${d.modelID ?? d.id ?? "?"}` : "unknown"
+        const state: PickerState = {
+          msgId: 0, chatId, sessionKey, sessionID, ownerId: userId,
+          adminIds: config.adminUsers, level: "providers",
+          providerPage: 0, modelPage: 0, providers,
+        }
+        const msgId = await api.sendText(chatId, providerText(state, current), replyTo, undefined, undefined, providerKeyboard(state))
+        state.msgId = msgId
+        pickerState.set(chatId, state)
+        diag("picker_open", token, { chat: chatId, providers: providers.length })
+      } catch (e) {
+        diag("picker_error", token, { chat: chatId, error: (e as Error)?.name ?? "unknown" })
+        await deliver(chatId, "Could not open the model picker. Try again in a moment.")
+      }
+    }
+
+    /** Handle a picker callback tap. Returns true if handled. */
+    const handlePickerCallback = async (q: any, data: string): Promise<boolean> => {
+      const chatId = String(q.message?.chat?.id ?? "")
+      const userId = String(q.from?.id ?? "")
+      const tappedId = q.message?.message_id
+      const state = pickerState.get(chatId)
+      // Only known picker callbacks are handled here.
+      if (!/^(mp:|mpv:|mg:|mm:|mb$|mx)/.test(data)) return false
+      await api.answerCallback(q.id)
+      if (!state) {
+        await api.answerCallback(q.id, "Picker expired — use /model again").catch(() => {})
+        return true
+      }
+      // Bind to the exact message and opener/admin authority.
+      if (String(tappedId) !== String(state.msgId)) {
+        await api.answerCallback(q.id, "Picker expired — use /model again").catch(() => {})
+        return true
+      }
+      const isOwner = userId === state.ownerId
+      const isAdmin = state.adminIds.has(userId)
+      if ((!isOwner && !isAdmin) || (q.from?.is_bot)) {
+        await api.answerCallback(q.id, "Only the person who opened this picker can use it.").catch(() => {})
+        return true
+      }
+
+      if (data === "mx") {
+        pickerState.delete(chatId)
+        await api.editText(chatId, state.msgId, "Cancelled.", undefined, undefined, { inline_keyboard: [] }).catch(() => {})
+        return true
+      }
+      if (data === "mx:noop") return true
+      if (data === "mb") {
+        state.level = "providers"
+        await api.editText(chatId, state.msgId, providerText(state, "see above"), undefined, undefined, providerKeyboard(state))
+        return true
+      }
+      if (data.startsWith("mpv:")) {
+        state.providerPage = Number(data.slice(4)) || 0
+        state.level = "providers"
+        await api.editText(chatId, state.msgId, providerText(state, "see above"), undefined, undefined, providerKeyboard(state))
+        return true
+      }
+      if (data.startsWith("mg:")) {
+        state.modelPage = Number(data.slice(3)) || 0
+        await api.editText(chatId, state.msgId, modelText(state), undefined, undefined, modelKeyboard(state))
+        return true
+      }
+      if (data.startsWith("mp:")) {
+        const slug = data.slice(3)
+        const provider = state.providers.find((p) => p.slug === slug)
+        if (!provider) { await api.answerCallback(q.id, "Provider not found").catch(() => {}); return true }
+        state.provider = provider
+        state.level = "models"
+        state.modelPage = 0
+        await api.editText(chatId, state.msgId, modelText(state), undefined, undefined, modelKeyboard(state))
+        return true
+      }
+      if (data.startsWith("mm:")) {
+        const idx = Number(data.slice(3))
+        const model = modelAt(state, idx)
+        if (!model) { await api.answerCallback(q.id, "Model not found").catch(() => {}); return true }
+        try {
+          await ctx.session.switchModel({ sessionID: state.sessionID, model: { providerID: model.providerID, id: model.id } })
+          pickerState.delete(chatId)
+          await api.editText(chatId, state.msgId, `Model switched to ${model.providerID}/${model.id}.`, undefined, undefined, { inline_keyboard: [] })
+          diag("picker_switched", token, { chat: chatId, model: model.id })
+        } catch (e) {
+          await api.answerCallback(q.id, "Could not switch model").catch(() => {})
+          diag("picker_switch_failed", token, { chat: chatId, error: (e as Error)?.name ?? "unknown", detail: safeError(e, token) })
+        }
+        return true
+      }
+      return true
+    }
+
     const handleUpdate: (u: Update) => Promise<void> = async (update) => {
+      // Inline-keyboard callback taps (model picker). Authorize before acting.
+      if (update.callback_query) {
+        const q = update.callback_query
+        const uid = String(q.from?.id ?? "")
+        const chatId = String(q.message?.chat?.id ?? "")
+        if (q.from?.is_bot || !uid || !chatId || !config.allowedUsers.has(uid)) {
+          await api.answerCallback(q.id, "Not authorized.").catch(() => {})
+          return
+        }
+        try {
+          await handlePickerCallback(q, q.data ?? "")
+        } catch (e) {
+          diag("callback_error", token, { user: uid, error: (e as Error)?.name ?? "unknown" })
+          await api.answerCallback(q.id).catch(() => {})
+        }
+        return
+      }
+
       // Inline queries: authorize on user identity alone (no chat context),
       // fail closed with an answered empty list. Never leak the catalog.
       if (update.inline_query) {
@@ -235,6 +370,11 @@ export default {
           return
         }
         diag("command", token, { user: userId, command: cmd.name })
+        // /models opens an inline picker (bare /model shows the current model).
+        if (cmd.name === "models") {
+          await openModelPicker(chatId, userId, sessionKey, msg.message_id)
+          return
+        }
         try {
           const reply = await runCommand(cmd, {
             ctx, config, sessions, userId, chatId, sessionKey, botId: me.id, title: sessionTitle,

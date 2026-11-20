@@ -4,8 +4,8 @@
  * SECURITY — two independent checks:
  *   1. The caller must pass the gateway authorization chain (done in index.ts
  *      before this module is reached).
- *   2. Command permission is a SEPARATE axis. `/new`, `/stop`, `/setmodel`,
- *      `/setagent` are admin-only when an admin list is configured. This is the
+ *   2. Command permission is a SEPARATE axis. `/new`, `/stop`, `/setagent`,
+ *      `/sessions`, `/resume` are admin-only when an admin list is configured. This is the
  *      fix for the Hermes W9 finding ("slash gating off by default").
  *
  * When no admin list is configured, gating is OFF and every authorized user
@@ -18,13 +18,13 @@ import { safeError } from "./redact.js"
 
 export const ALWAYS_ALLOWED = new Set(["help", "whoami"])
 /** Commands that change state or execution — admin-only when gating is on. */
-export const ADMIN_COMMANDS = new Set(["new", "stop", "setmodel", "setagent", "sessions", "resume"])
-export const USER_COMMANDS = new Set(["status", "model", "models", "agents", "commands", "compact", "context", "effort"])
+export const ADMIN_COMMANDS = new Set(["new", "stop", "setagent", "sessions", "resume"])
+export const USER_COMMANDS = new Set(["status", "models", "agents", "commands", "compact", "context", "effort"])
 
 /**
  * Single source of truth for the client-facing surfaces: the `/` menu, the
- * inline picker, and /help. Aliases (setmodel/setagent) resolve when typed but
- * are intentionally NOT advertised, mirroring the Hermes registry behavior.
+ * inline picker, and /help. The /setagent alias resolves when typed but is
+ * intentionally NOT advertised, mirroring the Hermes registry behavior.
  */
 export type CommandDef = {
   name: string
@@ -38,8 +38,7 @@ export const COMMAND_CATALOG: CommandDef[] = [
   { name: "new", description: "Start a fresh session", priority: 1 },
   { name: "stop", description: "Interrupt the current turn", priority: 2 },
   { name: "status", description: "Gateway status and your role", priority: 3 },
-  { name: "model", description: "Show or change the model", priority: 4 },
-  { name: "models", description: "List available models" },
+  { name: "models", description: "Open the model picker", priority: 4 },
   { name: "commands", description: "List OpenCode commands" },
   { name: "context", description: "Context window and token usage" },
   { name: "effort", description: "Show or change reasoning effort" },
@@ -246,26 +245,6 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
       return "Interrupted the current turn. The session is preserved."
     }
 
-    case "model": {
-      try {
-        const currentRaw = await ctx.model.default()
-        const current = (currentRaw as any)?.data ?? currentRaw
-        if (!cmd.arg) {
-          const id = current ? `${current.providerID ?? "?"}/${current.modelID ?? current.id ?? "?"}` : "unknown"
-          return `Current model: ${id} (change with /model provider/model)`
-        }
-        const parts = cmd.arg.split("/")
-        if (parts.length !== 2) return "Usage: /model provider/model (see /models)"
-        const providerID = parts[0]
-        const modelID = parts.slice(1).join("/")
-        const sessionID = await sessions.getOrCreate(sessionKey, title)
-        await ctx.session.switchModel({ sessionID, model: { providerID, id: modelID } })
-        return `Model switched to ${providerID}/${modelID} for this session.`
-      } catch (e) {
-        return `Could not switch model: ${safeError(e, config.token)}`
-      }
-    }
-
     case "models": {
       try {
         const models = unwrapList(await ctx.model.list())
@@ -401,12 +380,9 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
       return "Compaction requested. It will run at the next step boundary."
     }
 
-    case "setmodel":
     case "setagent": {
-      // Aliases kept for clarity; /model <id> and /agent <name> are preferred.
-      return cmd.name === "setmodel"
-        ? await runCommand({ name: "model", arg: cmd.arg }, env)
-        : await runCommand({ name: "agent", arg: cmd.arg }, env)
+      // Alias for /agent <name>.
+      return await runCommand({ name: "agent", arg: cmd.arg }, env)
     }
 
     default:

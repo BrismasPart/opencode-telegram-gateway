@@ -140,7 +140,7 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
   const unauthorizedBehavior = rawBehavior
 
   const adminUsers = parseCsv(process.env.OPENCODE_TELEGRAM_ADMIN_USERS)
-  const userCommands = parseCsv(process.env.OPENCODE_TELEGRAM_USER_COMMANDS ?? "help,whoami,status,model,models")
+  const userCommands = parseCsv(process.env.OPENCODE_TELEGRAM_USER_COMMANDS ?? "help,whoami,status,models")
   const boolEnv = (name: string, fallback: boolean) => {
     const v = process.env[name]?.trim().toLowerCase()
     return v === undefined ? fallback : v !== "false" && v !== "0" && v !== "no"

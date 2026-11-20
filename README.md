@@ -14,7 +14,7 @@ Based on Hermes Gateway.
 - Default-deny authorization with an optional pairing-style reply: unknown
   senders get a ready-to-run command to add their ID to the allowlist.
 - Slash commands with a **separate admin ACL**: `/help`, `/whoami`, `/status`,
-  `/new`, `/stop`, `/model`, `/models`, `/agent`, `/agents`, `/commands`,
+  `/new`, `/stop`, `/models`, `/agent`, `/agents`, `/commands`,
   `/compact`, `/context`, `/effort`, `/sessions`, `/resume` (last two admin only).
 - **Client-facing command surfaces**: the `/` menu via `setMyCommands` (three
   scopes + lazy forum scope, 60-entry cap, priority ordering, fingerprint-based
@@ -49,6 +49,10 @@ Based on Hermes Gateway.
   `dm_threads`), groups are per-user by default, forum topics are shared by
   default. Tune with `OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER` and
   `_THREAD_SESSIONS_PER_USER`.
+- **Model picker**: `/models` opens an inline-keyboard picker (10 providers
+  per page, 8 models per page, 44-char labels with namespace stripping) — taps
+  are authorized to the opener/admin and bound to the sent message. `/model`
+  has been removed — use the picker to switch.
 - **Sessions (admin only)**: `/sessions` lists Telegram-bound sessions,
   `/sessions all` lists every OpenCode session, `/sessions search <q>` filters
   by title. Each row is numbered; `/resume <number>` resumes by the last
