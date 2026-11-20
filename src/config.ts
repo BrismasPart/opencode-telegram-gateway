@@ -181,7 +181,7 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     textBatchMs: intEnv("OPENCODE_TELEGRAM_TEXT_BATCH_MS", 1200, 0, 5000),
     mediaBatchMs: intEnv("OPENCODE_TELEGRAM_MEDIA_BATCH_MS", 800, 0, 5000),
     markdown: (process.env.OPENCODE_TELEGRAM_MARKDOWN ?? "true").toLowerCase() !== "false",
-    richMessages: boolEnv("OPENCODE_TELEGRAM_RICH_MESSAGES", false),
+    richMessages: boolEnv("OPENCODE_TELEGRAM_RICH_MESSAGES", true),
     floodFile: (process.env.OPENCODE_TELEGRAM_FLOOD_FILE ?? "").trim() || undefined,
     maxTextChars: intEnv("OPENCODE_TELEGRAM_MAX_CHARS", 4000, 100, 4096),
     strict: (process.env.OPENCODE_TELEGRAM_STRICT ?? "true").toLowerCase() !== "false",

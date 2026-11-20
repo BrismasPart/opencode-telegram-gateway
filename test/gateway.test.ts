@@ -724,6 +724,7 @@ describe("config fails closed", () => {
     const cfg = loadConfig({ secretsFile: false })
     expect(cfg.allowedUsers.size).toBe(0)
     expect(cfg.unauthorizedBehavior).toBe("pair")
+    expect(cfg.richMessages).toBe(true)
   })
 
   test("unauthorized behavior can be set to ignore", () => {

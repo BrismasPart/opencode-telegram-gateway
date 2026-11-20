@@ -110,7 +110,7 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `OPENCODE_TELEGRAM_STT_KEY` / `_MODEL` | no | — / `whisper-1` | STT credentials/model. |
 | `OPENCODE_TELEGRAM_CACHE_DIR` | no | system temp | Inbound media cache root. |
 | `OPENCODE_TELEGRAM_MARKDOWN` | no | `true` | Render replies as MarkdownV2 with plain fallback. |
-| `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `false` | Use Bot API 10.1 native Rich Messages for GFM constructs. |
+| `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `true` | Use Bot API 10.1 native Rich Messages for GFM constructs. |
 | `OPENCODE_TELEGRAM_FLOOD_FILE` | no | data dir | Persisted per-chat flood-window file. |
 | `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables sticker/image descriptions. |
 | `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / see src | Vision credentials/model/prompt. |
