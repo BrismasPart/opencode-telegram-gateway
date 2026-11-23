@@ -20,6 +20,7 @@ import { shouldProcess } from "../src/gating.js"
 import { sessionKeyFor, sessionLabel } from "../src/session_routing.js"
 import { needsRich, richFits, shouldUseRich } from "../src/rich.js"
 import { approvalChoices, approvalWord, decisionFor, approvalText, type ApprovalState } from "../src/approval.js"
+import { httpPermissionReply } from "../src/opencode_api.js"
 import { groupProviders, fitLabel, stripCommonPrefix, providerKeyboard, modelKeyboard, modelAt, type PickerState } from "../src/model_picker.js"
 import { InboundBatcher } from "../src/batching.js"
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs"
@@ -537,6 +538,10 @@ describe("approvals", () => {
     expect(decisionFor("once")).toBe("once")
     expect(decisionFor("always")).toBe("always")
     expect(decisionFor("deny")).toBe("reject")
+  })
+
+  test("http reply returns false for an invalid request (no crash)", async () => {
+    expect(await httpPermissionReply("ses_missing", "per_missing", "once", "/data/home")).toBe(false)
   })
 
   test("approval text HTML-escapes and redacts the command", () => {

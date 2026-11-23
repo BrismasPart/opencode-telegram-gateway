@@ -30,6 +30,7 @@ import { shouldProcess } from "./gating.js"
 import { InboundBatcher } from "./batching.js"
 import { sessionKeyFor, sessionLabel } from "./session_routing.js"
 import { shouldUseRich } from "./rich.js"
+import { httpPermissionReply } from "./opencode_api.js"
 import {
   groupProviders, providerKeyboard, modelKeyboard, providerText, modelText,
   modelAt, type PickerState, type PickerModel,
@@ -287,10 +288,13 @@ export default {
       if (state.timer) clearTimeout(state.timer)
       approvals.delete(id)
       try {
-        await ctx.permission.reply({
-          sessionID: state.sessionID, requestID: state.requestID, decision: "reject",
-          ...(state.location?.directory ? { location: state.location } : {}),
-        } as any)
+        const ok = await httpPermissionReply(state.sessionID, state.requestID, "reject", state.location?.directory)
+        if (!ok) {
+          await ctx.permission.reply({
+            sessionID: state.sessionID, requestID: state.requestID, decision: "reject",
+            ...(state.location?.directory ? { location: state.location } : {}),
+          } as any)
+        }
         await api.editText(
           state.chatId, state.messageId,
           "⏱️ Approval timed out after 5 minutes — command did NOT run.",
@@ -315,10 +319,15 @@ export default {
       if (state.timer) clearTimeout(state.timer)
       approvals.delete(id)
       try {
-        await ctx.permission.reply({
-          sessionID: state.sessionID, requestID: state.requestID, decision: decisionFor(choice),
-          ...(state.location?.directory ? { location: state.location } : {}),
-        } as any)
+        const ok = await httpPermissionReply(
+          state.sessionID, state.requestID, decisionFor(choice), state.location?.directory,
+        )
+        if (!ok) {
+          await ctx.permission.reply({
+            sessionID: state.sessionID, requestID: state.requestID, decision: decisionFor(choice),
+            ...(state.location?.directory ? { location: state.location } : {}),
+          } as any)
+        }
         await api.editText(
           state.chatId, state.messageId,
           `${choice === "deny" ? "Denied" : "Approved"} by ${actorId} — command ${choice === "deny" ? "did NOT run" : "will run"}.`,
@@ -330,10 +339,12 @@ export default {
         diag("approval_error", token, { choice, error: (e as Error)?.name ?? "unknown", detail: safeError(e, token) })
         // Fail closed: try to reject so the command never runs.
         try {
-          await ctx.permission.reply({
-          sessionID: state.sessionID, requestID: state.requestID, decision: "reject",
-          ...(state.location?.directory ? { location: state.location } : {}),
-        } as any)
+          if (!await httpPermissionReply(state.sessionID, state.requestID, "reject", state.location?.directory)) {
+            await ctx.permission.reply({
+              sessionID: state.sessionID, requestID: state.requestID, decision: "reject",
+              ...(state.location?.directory ? { location: state.location } : {}),
+            } as any)
+          }
         } catch { /* best effort */ }
         return false
       }
