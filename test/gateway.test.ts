@@ -517,10 +517,38 @@ describe("turn completion ordering", () => {
       },
     }
     const bridge = new SessionBridge(ctx, {} as any)
-    const text = await bridge.finalText("ses_test", 5000)
+    const text = await bridge.finalText("ses_test", 5000, 5)
     expect(text).toBe("done")
     expect(waits).toBeGreaterThanOrEqual(3)
     expect(lists).toBeGreaterThanOrEqual(3)
+  })
+
+  test("finalText waits through the gap between two approvals", async () => {
+    let lists = 0
+    let contextCalls = 0
+    const finalMsgs = [
+      { type: "assistant", content: [{ type: "text", text: "interim" }] },
+      { type: "assistant", content: [{ type: "text", text: "FINAL ANSWER" }] },
+    ]
+    const ctx = {
+      session: {
+        wait: async () => {},
+        context: async () => {
+          contextCalls++
+          // First check: only interim text (approval #1 just resolved, #2 pending soon).
+          // Later checks: final answer present.
+          return contextCalls <= 2 ? [finalMsgs[0]] : finalMsgs
+        },
+      },
+      permission: {
+        // permission #2 pending on the first settle check
+        list: async () => { lists++; return lists === 1 ? [{ id: "per_2" }] : [] },
+      },
+    }
+    const bridge = new SessionBridge(ctx, {} as any)
+    const text = await bridge.finalText("ses_test", 5000, 5)
+    expect(text).toBe("FINAL ANSWER")
+    expect(lists).toBeGreaterThanOrEqual(2)
   })
 })
 

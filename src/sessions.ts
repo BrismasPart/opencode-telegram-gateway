@@ -135,31 +135,53 @@ export class SessionBridge {
   }
 
   /** Wait for the turn to finish, then read the last assistant text.
-   * A pending permission is NOT "done" — keep waiting so we never deliver a
-   * message about an approval before it has been answered (the agent may be
-   * blocked mid-turn waiting for the human). */
-  async finalText(sessionID: string, timeoutMs = 600_000): Promise<string> {
+   * A pending permission is NOT "done" — keep waiting so we never deliver an
+   * interim message between two approvals. After `session.wait()` returns we
+   * SETTLE: a short grace period, then re-check for (a) a newly-created
+   * permission and (b) newly-arrived messages. Only when both are stable do we
+   * declare the turn finished. This prevents the "message arrives after the
+   * approval request" problem when a turn needs more than one approval. */
+  async finalText(sessionID: string, timeoutMs = 600_000, settleMs = 1_500): Promise<string> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error("turn timeout")), timeoutMs)
+    let messages: any[] = []
     try {
+      let stableRounds = 0
       for (;;) {
         await this.ctx.session.wait({ sessionID }, { signal: controller.signal })
-        // If a permission is still pending, the turn is paused (not finished).
-        // Wait briefly and re-check rather than reading a premature final text.
+        // Settle: the agent can go briefly idle between consecutive tool calls
+        // (e.g. between two approvals). Don't treat that as "turn finished".
+        await new Promise((r) => setTimeout(r, settleMs))
+        if (controller.signal.aborted) break
+
         let pending = 0
         try {
           const list = await this.ctx.permission.list({ sessionID })
           pending = Array.isArray(list) ? list.length : (Array.isArray((list as any)?.data) ? (list as any).data.length : 0)
         } catch { /* permission API unavailable — treat as no pending */ }
-        if (!pending || controller.signal.aborted) break
-        await new Promise((r) => setTimeout(r, 1_000))
+        const current = unwrap(await this.ctx.session.context({ sessionID }))
+        if (pending > 0) {
+          stableRounds = 0
+          continue
+        }
+        // If the message list is still growing, the turn is still active.
+        if (current.length !== messages.length) {
+          messages = current
+          stableRounds = 0
+          continue
+        }
+        messages = current
+        stableRounds++
+        if (stableRounds >= 2) break // two consecutive stable checks
       }
     } catch {
       // A timeout does not mean the turn failed; read whatever is available.
     } finally {
       clearTimeout(timer)
     }
-    const messages = await this.ctx.session.context({ sessionID })
+    if (!messages.length) {
+      try { messages = unwrap(await this.ctx.session.context({ sessionID })) } catch { /* best effort */ }
+    }
     return extractAssistantText(messages) || "_(No text response was produced.)_"
   }
 }
