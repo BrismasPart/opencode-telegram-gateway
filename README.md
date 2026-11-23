@@ -1,101 +1,60 @@
-# OpenCode Telegram Gateway (plugin)
+# OpenCode Telegram Gateway
 
-A dependency-free V2 OpenCode server plugin that bridges Telegram messages to
-OpenCode sessions. 
-Based on Hermes Gateway.
+A V2 OpenCode server plugin that relays Telegram messages to OpenCode sessions and returns replies. It runs inside `opencode serve --service` — no separate gateway process. All configuration is via environment variables. Inspired by Hermes Gateway.
 
-## Scope
+## Quick start
 
-- Long polling (default) or webhook with a mandatory secret.
-- Text messages only (captions are forwarded as `[Image/media] …`).
-- One OpenCode session per Telegram chat (persisted in plugin storage).
-- Optional streaming previews via `session.text.delta` events, finalized by a
-  normal send/edit.
-- Default-deny authorization with an optional pairing-style reply: unknown
-  senders get a ready-to-run command to add their ID to the allowlist.
-- Slash commands with a **separate admin ACL**: `/help`, `/whoami`, `/status`,
-  `/new`, `/stop`, `/models`, `/agent`, `/agents`, `/commands`,
-  `/compact`, `/context`, `/effort`, `/sessions`, `/resume` (last two admin only).
-- **Client-facing command surfaces**: the `/` menu via `setMyCommands` (three
-  scopes + lazy forum scope, 60-entry cap, priority ordering, fingerprint-based
-  re-registration) and an inline picker (`@bot <query>`) with authorization,
-  filtering, pagination, and uncapped catalog.
-- **Media pipeline**: inbound photos/documents/PDFs become OpenCode prompt
-  attachments (`file://` URIs), audio/video are cached with path notes, voice
-  is optionally transcribed; outbound `MEDIA: <path>` directives upload as
-  native photos/voice/audio/video/documents. Traversal-safe paths and hard
-  20 MiB caps throughout.
-- **MarkdownV2 rendering**: agent replies are converted to Telegram MarkdownV2
-  (bold/italic/code/links/quotes) with UTF-16 chunking and a plain-text
-  fallback on entity-parse errors — never on transport errors.
-- **Native Rich Messages** (opt-in): Bot API 10.1 `sendRichMessage` sends raw
-  GFM markdown so headings, tables, task lists, code fences and math render
-  natively (32 KB limit). Falls back to MarkdownV2 on parse errors and latches
-  off if the method is unavailable. Streaming previews are off while enabled.
-- **Quick polish**: optional 👀/👍/👎 reactions, typing indicator while the
-  agent works, and an Online/Offline bot short-description indicator.
-- **Approval cards**: OpenCode's native permission requests surface in Telegram
-  as inline-keyboard cards (Allow Once / Always / Deny). Cards are born
-  Deny-only until the full redacted command is shown; taps are bound to the
-  opener/admin and the exact message, time out after 5 minutes (fail-closed
-  deny), and `/approve`, `/deny` or bare yes/no work only while pending.
-- **Persisted flood windows**: per-chat 429 cooldowns clamped to 1–300 s and
-  written to a 0600 file; surviving restarts, checked before every send.
-- **Polling supervision**: heartbeat (90 s `getMe` probe), stall watchdog
-  (150 s without progress), and reconnect ladders (network 10× 5→60 s,
-  conflict 5× 20→60 s). The single-writer lock is refreshed by poll progress,
-  so a torn-down instance cannot block a replacement.
-- **Vision**: optional sticker/image descriptions via an OpenAI-compatible
-  vision endpoint, cached by `file_unique_id` in a 0600 file.
-- **Group gating** (WHEN to answer, separate from authorization): `allowed_chats`,
-  `allowed_topics`, `ignored_threads`, `require_mention`, `guest_mode`,
-  `exclusive_bot_mentions`, free-response chats.
-- **Inbound batching**: merges client-split text and photo bursts into one turn
-  (commands are never batched); cancel-safe on shutdown.
-- **Per-user / per-topic sessions**: DMs are per chat (DM threads opt-in via
-  `dm_threads`), groups are per-user by default, forum topics are shared by
-  default. Tune with `OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER` and
-  `_THREAD_SESSIONS_PER_USER`.
-- **Model picker**: `/models` opens an inline-keyboard picker (10 providers
-  per page, 8 models per page, 44-char labels with namespace stripping) — taps
-  are authorized to the opener/admin and bound to the sent message. `/model`
-  has been removed — use the picker to switch.
-- **Sessions (admin only)**: `/sessions` lists Telegram-bound sessions,
-  `/sessions all` lists every OpenCode session, `/sessions search <q>` filters
-  by title. Each row is numbered; `/resume <number>` resumes by the last
-  listing's index, `/resume <session_id>` resumes by id.
-- Dedup receipts, token redaction, least-privilege session permissions, and no
-  blind resends of ambiguous failures.
+1. Create a bot with [@BotFather](https://t.me/BotFather) and find your numeric user ID (for example with [@userinfobot](https://t.me/userinfobot)).
+2. Load the plugin. Copy this directory to `.opencode/plugins/telegram-gateway/` (auto-loaded), or add it to `opencode.json(c)`:
 
-## Load the plugin
+   ```jsonc
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugins": ["~/.config/opencode/plugins/opencode-telegram-gateway"]
+   }
+   ```
 
-Either drop it in `.opencode/plugins/telegram-gateway/` (auto-loaded), or add
-to `opencode.json(c)`:
+3. Write the token from your own terminal — never paste it into chat:
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["~/.config/opencode/plugins/opencode-telegram-gateway"]
-}
-```
+   ```sh
+   scripts/write-secrets.sh
+   ```
 
-Config reloads without a restart. Plugins are server-side; the TUI connects to
-the background service where this plugin runs.
+   The script reads the token with hidden input, writes `~/.config/opencode/telegram-gateway.env` with mode `0600`, and leaves nothing in shell history. Leave the allowlist blank to test default-deny. Real environment variables override the file.
 
-## Hermes-like setup
+4. Start `opencode serve --service` and message the bot. Plugin config reloads without a restart; after editing the secrets file, run `/reload` in OpenCode.
 
-No separate gateway server is needed: `opencode serve --service` is the long-running host, and this plugin's polling loop runs inside it. Three pieces give you the Hermes setup experience:
+`scripts/install-service.sh` installs a `systemd --user` unit that runs the host with `Restart=always`. Run `opencode service set disabled true` first so a second server does not clash on port 4096.
 
-1. **Secrets file** — create `~/.config/opencode/telegram-gateway.env` with mode `0600`. It is loaded by the plugin at `setup` (env vars win). Only `TELEGRAM_*` / `OPENCODE_TELEGRAM_*` keys are accepted; wrong permissions or ownership fail closed. `TELEGRAM_GATEWAY_ENV_FILE` can override the path.
-   - **Never paste the token into the agent.** Run `scripts/write-secrets.sh` in your own terminal: it reads with `read -s` (hidden input), writes the 0600 file, and leaves nothing in shell history, prompts, tool calls, or logs. Leave the allowlist prompt blank to test default-deny. Any token typed into chat is recorded in the session log — do not rely on redaction to clean it up.
-2. **Wizard** — the `telegram-gateway` skill walks through BotFather token, operator user ID, transport choice, writing the secrets file, and `/reload`. (The QR managed-bot flow depends on an external Nous service and is not reproduced.)
-3. **Supervision** — `scripts/install-service.sh` installs a systemd `--user` unit that runs `opencode serve --service` with `Restart=always`. Run `opencode service set disabled true` first so there is only one server on port 4096.
+Plugin setup throws if the token is missing, so create the secrets file before starting the host.
 
-Important: plugin `setup` throws if the token is missing, so write the secrets file before starting the service.
+## What it does
 
-## Configuration (environment variables)
+- **Sessions** — one per DM, per group sender, or per forum topic. Isolation is configurable.
+- **Media** — photos, documents, and PDFs become prompt attachments; audio and video are cached with path notes; voice notes are optionally transcribed. Outbound `MEDIA: <path>` directives upload native attachments. Paths are traversal-safe; the per-file cap is 20 MiB by default.
+- **Rendering** — MarkdownV2 replies with a plain-text fallback on entity parse errors. Native Rich Messages (Bot API 10.1) render headings, tables, task lists, code fences, and math; the lane falls back to MarkdownV2 on parse errors and latches off if the method is unavailable. Streaming previews are disabled while Rich Messages are enabled.
+- **Polish** — optional reactions, typing indicator, and Online/Offline bot description.
+- **Authorization** — default-deny user allowlist. Unknown senders get a ready-to-run command for adding their ID, or silence with `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR=ignore`. Control commands use a separate admin ACL.
+- **Approvals** — OpenCode permission requests appear as inline-keyboard cards (Allow Once / Always / Deny) and can also be answered in the OpenCode TUI. Cards are deny-only until the full redacted command is shown; taps are bound to the opener/admin and the exact message. Pending cards auto-deny after five minutes.
+- **Groups** — allowed chats/topics, ignored threads, mention requirements, guest mode, and free-response chats decide when to answer. Client-split text and photo bursts merge into one turn; commands are never batched.
+- **Reliability** — `update_id` dedup receipts (24h TTL), per-chat 429 cooldowns persisted to a `0600` file, and polling supervision with heartbeat, stall watchdog, and reconnect ladders. A single poller owns each token; ambiguous send failures are never blindly retried.
 
-Secrets can come from the real environment or the owner-only secrets file above (real env wins).
+## Commands
+
+`/help`, `/whoami`, `/status`, `/new`, `/stop`, `/models`, `/agent`, `/agents`, `/commands`, `/compact`, `/context`, `/effort`, `/sessions`, `/resume`. `/start` maps to `/help`; `/setagent` is an unadvertised alias for `/agent`. When an admin list is configured, `/sessions` and `/resume` are admin-only.
+
+- `/models` opens an inline model picker (10 providers/page, 8 models/page). There is no working `/model` switch command; use the picker.
+- `/sessions` lists Telegram-bound sessions; `all` lists every OpenCode session, `search <q>` filters by title. `/resume <n>` uses the last listing's index; `/resume <id>` uses a session ID.
+- `/approve`, `/deny`, and bare yes/no resolve a pending approval card.
+
+Two client-facing surfaces:
+
+- `/` menu — registered at startup via `setMyCommands` for default, private, and group scopes, plus a lazy per-forum scope. Registration is non-fatal and skipped when the menu is unchanged. Hidden commands still dispatch when typed.
+- Inline picker — `@bot <query>` searches commands. Enable inline mode with BotFather `/setinline` first. Results paginate 50/page; unauthorized callers get an empty list. Tapping a result sends `/cmd args` through the normal auth path.
+
+## Configuration
+
+Secrets come from the real environment or the owner-only secrets file; the environment wins. The loader accepts only `TELEGRAM_*` / `OPENCODE_TELEGRAM_*` keys and requires mode `0600` with current-user ownership. Wrong permissions or ownership fail closed.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
@@ -103,7 +62,7 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `TELEGRAM_GATEWAY_ENV_FILE` | no | `~/.config/opencode/telegram-gateway.env` | Owner-only secrets file path. |
 | `TELEGRAM_ALLOWED_USERS` | strongly recommended | empty (deny all) | CSV of numeric Telegram user IDs. |
 | `TELEGRAM_WEBHOOK_URL` | no | unset (polling) | Public https URL; enables webhook mode. |
-| `TELEGRAM_WEBHOOK_SECRET` | with webhook | — | ≥32 chars, e.g. `openssl rand -hex 32`. Startup refuses without it. |
+| `TELEGRAM_WEBHOOK_SECRET` | with webhook | — | ≥32 chars, e.g. `openssl rand -hex 32`. Required at startup. |
 | `TELEGRAM_WEBHOOK_HOST` | no | `127.0.0.1` | Bind host. Keep loopback behind a reverse proxy. |
 | `TELEGRAM_WEBHOOK_PORT` | no | `8443` | Bind port. |
 | `OPENCODE_TELEGRAM_STREAM` | no | `true` | Streaming previews via message edits. |
@@ -111,107 +70,68 @@ Secrets can come from the real environment or the owner-only secrets file above 
 | `OPENCODE_TELEGRAM_AGENT` | no | — | Agent name for Telegram sessions. |
 | `OPENCODE_TELEGRAM_WORKDIR` | no | plugin location | Working directory for Telegram sessions. |
 | `OPENCODE_TELEGRAM_DENIED_TOOLS` | no | `bash,edit,write,patch` | Actions set to `ask` for Telegram sessions. |
-| `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR` | no | `pair` | `pair`: reply to strangers with approval instructions; `ignore`: stay silent. |
-| `OPENCODE_TELEGRAM_ADMIN_USERS` | no | empty | Admin IDs for control commands. Empty = gating OFF (all users may run all commands). Set this on shared bots. |
-| `OPENCODE_TELEGRAM_USER_COMMANDS` | no | `help,whoami,status,model,models` | Commands non-admins may run when gating is ON. |
-| `OPENCODE_TELEGRAM_COMMAND_MENU_MAX` | no | `60` | `/` menu entries (clamped 1..100; hidden commands still dispatch). |
+| `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR` | no | `pair` | `pair`: send approval instructions; `ignore`: stay silent. |
+| `OPENCODE_TELEGRAM_ADMIN_USERS` | no | empty | Admin IDs for control commands. Empty disables gating. |
+| `OPENCODE_TELEGRAM_USER_COMMANDS` | no | `help,whoami,status,models` | Commands non-admins may run when gating is on. |
+| `OPENCODE_TELEGRAM_COMMAND_MENU_MAX` | no | `60` | `/` menu entries (clamped 1..100). |
 | `OPENCODE_TELEGRAM_MEDIA` | no | `true` | Enable the media pipeline. |
-| `OPENCODE_TELEGRAM_MAX_MEDIA_BYTES` | no | `20971520` | Hard per-file download/upload cap (1 KiB..100 MiB). |
+| `OPENCODE_TELEGRAM_MAX_MEDIA_BYTES` | no | `20971520` | Per-file download/upload cap (1 KiB..100 MiB). |
 | `OPENCODE_TELEGRAM_STT_URL` | no | — | OpenAI-compatible transcription URL; enables voice STT. |
 | `OPENCODE_TELEGRAM_STT_KEY` / `_MODEL` | no | — / `whisper-1` | STT credentials/model. |
 | `OPENCODE_TELEGRAM_CACHE_DIR` | no | system temp | Inbound media cache root. |
 | `OPENCODE_TELEGRAM_MARKDOWN` | no | `true` | Render replies as MarkdownV2 with plain fallback. |
-| `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `true` | Use Bot API 10.1 native Rich Messages for GFM constructs. |
-| `OPENCODE_TELEGRAM_APPROVALS` | no | `true` | Surface OpenCode permission requests as Telegram approval cards. |
-| `OPENCODE_TELEGRAM_APPROVAL_TIMEOUT` | no | `300` | Seconds before a pending approval is auto-denied (5..3600). |
+| `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `true` | Native Rich Messages for GFM constructs. |
+| `OPENCODE_TELEGRAM_APPROVALS` | no | `true` | Surface permission requests as Telegram cards. |
+| `OPENCODE_TELEGRAM_APPROVAL_TIMEOUT` | no | `300` | Seconds before a pending approval auto-denies (5..3600). |
 | `TELEGRAM_REACTIONS` | no | `false` | 👀 while working, 👍/👎 on completion. |
 | `OPENCODE_TELEGRAM_TYPING` | no | `true` | Typing indicator while the agent works. |
 | `OPENCODE_TELEGRAM_STATUS_INDICATOR` | no | `false` | Flip bot short description to Online/Offline. |
 | `OPENCODE_TELEGRAM_FLOOD_FILE` | no | data dir | Persisted per-chat flood-window file. |
-| `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables sticker/image descriptions. |
-| `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / see src | Vision credentials/model/prompt. |
-| `OPENCODE_TELEGRAM_VISION_IMAGES` | no | `false` | Also describe ordinary images (else attached directly). |
+| `OPENCODE_TELEGRAM_VISION_URL` | no | — | OpenAI-compatible vision endpoint; enables image/sticker descriptions. |
+| `OPENCODE_TELEGRAM_VISION_KEY` / `_MODEL` / `_PROMPT` | no | — / `gpt-4o-mini` / `Describe this image or sticker in one short sentence.` | Vision credentials/model/prompt. |
+| `OPENCODE_TELEGRAM_VISION_IMAGES` | no | `false` | Also describe ordinary images. |
 | `OPENCODE_TELEGRAM_VISION_CACHE` | no | data dir | Sticker vision cache file. |
 | `TELEGRAM_ALLOWED_CHATS` / `_ALLOWED_TOPICS` / `_IGNORED_THREADS` | no | empty | Group/topic trigger gates (CSV ids). |
 | `TELEGRAM_REQUIRE_MENTION` / `_GUEST_MODE` / `_EXCLUSIVE_BOT_MENTIONS` | no | false / false / true | Group mention behavior. |
 | `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty | Chats exempt from `require_mention`. |
 | `OPENCODE_TELEGRAM_TEXT_BATCH_MS` / `_MEDIA_BATCH_MS` | no | 1200 / 800 | Text/photo batch windows (0 disables). |
 | `OPENCODE_TELEGRAM_GROUP_SESSIONS_PER_USER` | no | `true` | Isolate group sessions per sender. |
-| `OPENCODE_TELEGRAM_THREAD_SESSIONS_PER_USER` | no | `false` | Isolate forum topic sessions per sender (else shared per topic). |
+| `OPENCODE_TELEGRAM_THREAD_SESSIONS_PER_USER` | no | `false` | Isolate forum topic sessions per sender. |
 | `OPENCODE_TELEGRAM_DM_THREADS` | no | `per_thread` | `per_thread` or `shared` (collapse DM threads). |
 | `OPENCODE_TELEGRAM_MAX_CHARS` | no | `4000` | Outbound UTF-16 chunk size (≤4096). |
 
-A fully-documented `.env.example` with **all 41 options** ships with the
-plugin — copy it to the 0600 file and edit:
+The shipped `.env.example` documents every setting:
+
 ```sh
 cp .env.example ~/.config/opencode/telegram-gateway.env
 chmod 600 ~/.config/opencode/telegram-gateway.env
 ```
-Generate a webhook secret with `openssl rand -hex 32`.
 
-## Security model
+## Security
 
-1. **Default-deny.** Empty allowlist authorizes nobody. There is no `allow all`
-   switch. Authorization runs before any message reaches a session.
-2. **Default-deny with guided approval.** An unknown sender never reaches a
-   session. In `pair` mode they get a reply with a ready-to-run command; the
-   operator (or the user at the terminal) runs it to add the ID to the 0600
-   file, then `/reload`. One notice per sender per 10 minutes prevents spam.
-   Set `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR=ignore` for full silence.
-   **Being authorized does not grant control commands** — that is a separate
-   ACL (`OPENCODE_TELEGRAM_ADMIN_USERS`). Commands never reach the agent as a
-   prompt; they are handled by the plugin.
-3. **Fail-closed config.** Missing/malformed token, webhook URL without secret,
-   short secret, or non-https URL all throw at plugin setup.
-4. **Token hygiene.** Tokens are used only to build API URLs and never logged;
-   every error string passes through `redact()`. Query strings are stripped.
-5. **Dedup.** `update_id` receipts in durable plugin storage with a 24h TTL and
-   periodic pruning prevent duplicate turns across reconnects.
-6. **Least privilege.** Telegram sessions get `ask` permissions for dangerous
-   actions; approval happens in the OpenCode TUI/desktop. This is the primary
-   prompt-injection mitigation, since message bodies are inherently untrusted.
-7. **Webhook hardening.** Constant-time secret comparison, POST+JSON only,
-   1 MiB body cap enforced while reading, malformed payloads rejected without
-   logging their content, and an immediate 200 so agent turns don't hold the
-   request open.
-8. **No ambiguous resends.** Flood waits ≤5s are awaited inline; larger waits
-   and LOST/network failures surface as errors instead of retrying into a
-   penalty or duplicating a message.
+1. **Default-deny** — an empty allowlist authorizes nobody. There is no allow-all switch, and authorization runs before any message reaches a session.
+2. **Separate ACL** — being allowed to talk does not grant control commands. Set `OPENCODE_TELEGRAM_ADMIN_USERS` to enable gating; with no admin list, every authorized user may run every command. Commands never reach the agent as a prompt.
+3. **Fail-closed config** — a missing or malformed token, a webhook URL without a secret, a short secret, or a non-https URL throws at plugin setup.
+4. **Token hygiene** — the token is used only to build API URLs and is never logged. Error strings pass through `redact()` and query strings are stripped.
+5. **Least privilege** — dangerous tools are set to `ask` for Telegram sessions. This is the main prompt-injection mitigation, since message bodies are untrusted; approval failures and timeouts deny.
+6. **Webhook hardening** — constant-time secret comparison, POST+JSON only, a 1 MiB body cap enforced while reading, malformed payloads rejected without content logging, and an immediate 200 so agent turns do not hold the request open.
 
-## Command surfaces
-
-- **`/` menu** — registered at startup via `setMyCommands` to `default`,
-  `all_private_chats`, and `all_group_chats` scopes; forum supergroups get a
-  lazy per-chat scope on first message. Registration is non-fatal and skipped
-  when the menu fingerprint is unchanged. The menu is a shortcut, not a gate:
-  hidden commands still work when typed, and aliases resolve when typed but
-  are never advertised.
-- **Inline picker** — `@bot <query>` returns a searchable command list. Enable
-  inline mode with BotFather `/setinline` first; until then Telegram never
-  delivers inline queries. The catalog is uncapped, the first token filters,
-  the remainder becomes the command argument, results are paginated 50/page,
-  and unauthorized callers get an answered empty list (no catalog leak).
-  Tapping a result sends `/cmd args` as a normal message, so it goes through
-  the standard auth + ACL path.
-
-## Verification (no live bot required)
+## Verification
 
 ```sh
-bun test test/          # 20 tests: redaction, chunking, config, secrets file, event/message shapes
+bun test test/          # 84 tests: redaction, chunking, config, secrets, commands, media, rendering, gating, approvals, reliability
 ```
 
-For a live smoke test: set the env vars, start OpenCode, send a message from
-an allowlisted user and from a stranger (the stranger must get no reply), then
-re-deliver the same `update_id` to confirm dedup.
+For a live smoke test: set the env vars, start OpenCode, send a message from an allowlisted user and from a stranger (by default the stranger gets only an approval notice, never a session), then re-deliver the same `update_id` to confirm dedup.
 
 ## Limitations
 
-- Approval is a local file edit + `/reload`, not an in-chat approval flow. To
-  keep strangers fully silent, set `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR=ignore`.
-- Media: images/text/PDF are model-visible; audio/video are cached with path
-  notes (enable STT for voice). No albums/batching, media tags/cover art,
-  forced JPEG precompression, or TTS output. Replies render as MarkdownV2 (not
-  native rich messages).
-- One process per bot token (Telegram forbids concurrent pollers).
-- Webhook listener is plain HTTP; TLS must terminate at a reverse proxy.
-- Approval prompts appear in the OpenCode TUI, not inline in Telegram.
+- Adding a user is a secrets-file edit plus `/reload` (`scripts/allow-user.sh`), not an in-chat approval flow. Set `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR=ignore` to keep strangers fully silent.
+- Media: images, text, and PDFs are model-visible; audio and video are cached with path notes (enable STT for voice). No media tags/cover art, forced JPEG precompression, or TTS output.
+- Rich Messages require Bot API 10.1 support. If the method is unavailable, the plugin latches back to MarkdownV2.
+- One process per bot token; Telegram forbids concurrent pollers.
+- The webhook listener is plain HTTP; TLS must terminate at a reverse proxy.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
