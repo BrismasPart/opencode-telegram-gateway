@@ -1,7 +1,7 @@
 {
   "name": "opencode-telegram-gateway",
   "version": "0.1.0",
-  "description": "Secure Telegram gateway plugin for the OpenCode harness",
+  "description": "Telegram gateway plugin for the OpenCode harness",
   "type": "module",
   "private": true,
   "exports": {
