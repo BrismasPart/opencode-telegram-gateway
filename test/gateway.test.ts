@@ -22,6 +22,7 @@ import { needsRich, richFits, shouldUseRich } from "../src/rich.js"
 import { approvalChoices, approvalWord, decisionFor, approvalText, type ApprovalState } from "../src/approval.js"
 import { httpPermissionReply, httpFormReply, httpFormCancel } from "../src/opencode_api.js"
 import { TurnQueue } from "../src/turn_queue.js"
+import { writeRequesterMarker, readRequesterMarker, clearRequesterMarker, writePlannedMarker, readPlannedMarker, markPlannedDelivered, clearPlannedMarker, claimBootNotice, releaseBootNotice, NOTICE } from "../src/restart_state.js"
 import { questionText, questionKeyboard, optionAt, applyTyped, type QuestionState } from "../src/questions.js"
 import { groupProviders, fitLabel, stripCommonPrefix, providerKeyboard, modelKeyboard, modelAt, type PickerState } from "../src/model_picker.js"
 import { InboundBatcher } from "../src/batching.js"
@@ -502,6 +503,47 @@ describe("flood windows", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("restart markers", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "tg-restart-"))
+    process.env.OPENCODE_TELEGRAM_RESTART_DIR = dir
+    return dir
+  }
+  test("requester marker round-trips and clears", () => {
+    setup()
+    writeRequesterMarker({ chatId: "8605", userId: "42", sessionKey: "k", messageId: 7 })
+    const m = readRequesterMarker()
+    expect(m?.chatId).toBe("8605")
+    expect(m?.messageId).toBe(7)
+    clearRequesterMarker()
+    expect(readRequesterMarker()).toBeNull()
+    delete process.env.OPENCODE_TELEGRAM_RESTART_DIR
+  })
+  test("planned marker tracks delivered targets", () => {
+    setup()
+    writePlannedMarker()
+    markPlannedDelivered("home1")
+    expect(readPlannedMarker()?.deliveredTargets).toContain("home1")
+    clearPlannedMarker()
+    expect(readPlannedMarker()).toBeNull()
+    delete process.env.OPENCODE_TELEGRAM_RESTART_DIR
+  })
+  test("notice strings are distinct", () => {
+    expect(NOTICE.preRestart).toContain("restarting")
+    expect(NOTICE.online).toContain("online")
+    expect(NOTICE.restarted).toContain("successfully")
+  })
+  test("boot notice claim is single-winner", () => {
+    setup()
+    expect(claimBootNotice()).toBe(true)
+    expect(claimBootNotice()).toBe(false) // second instance is denied
+    releaseBootNotice()
+    expect(claimBootNotice()).toBe(true) // can claim again after release
+    releaseBootNotice()
+    delete process.env.OPENCODE_TELEGRAM_RESTART_DIR
   })
 })
 

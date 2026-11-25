@@ -45,6 +45,10 @@ export interface GatewayConfig {
   approvalsEnabled: boolean;
   /** Seconds before a pending Telegram approval is rejected (fail closed). */
   approvalTimeoutMs: number;
+  /** Chat id that receives the ♻️ online notice after a restart. */
+  homeChannel?: string;
+  /** Send restart/shutdown notices (default true). */
+  restartNotification: boolean;
   /** Enable the media pipeline. */
   mediaEnabled: boolean;
   /** Hard per-file download/upload cap in bytes. */
@@ -177,6 +181,8 @@ export function loadConfig(options: { secretsFile?: string | false } = {}): Gate
     statusIndicator: boolEnv("OPENCODE_TELEGRAM_STATUS_INDICATOR", false),
     approvalsEnabled: boolEnv("OPENCODE_TELEGRAM_APPROVALS", true),
     approvalTimeoutMs: intEnv("OPENCODE_TELEGRAM_APPROVAL_TIMEOUT", 300, 5, 3600) * 1000,
+    homeChannel: (process.env.TELEGRAM_HOME_CHANNEL ?? "").trim() || undefined,
+    restartNotification: boolEnv("OPENCODE_TELEGRAM_RESTART_NOTIFICATION", true),
     mediaEnabled: (process.env.OPENCODE_TELEGRAM_MEDIA ?? "true").toLowerCase() !== "false",
     maxMediaBytes: intEnv("OPENCODE_TELEGRAM_MAX_MEDIA_BYTES", 20 * 1024 * 1024, 1024, 100 * 1024 * 1024),
     allowedChats: parseCsv(process.env.TELEGRAM_ALLOWED_CHATS),

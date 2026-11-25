@@ -38,12 +38,13 @@ Plugin setup throws if the token is missing, so create the secrets file before s
 - **Approvals** — OpenCode permission requests appear as inline-keyboard cards (Allow Once / Always / Deny) and can also be answered in the OpenCode TUI. Cards are deny-only until the full redacted command is shown; taps are bound to the opener/admin and the exact message. Pending cards auto-deny after five minutes.
 - **Questions** — the agent's `question` tool renders as Telegram inline buttons (with an "Other" option for typed answers), so a blocked turn can continue from the chat. Taps are authorized and message-bound like approvals.
 - **Turn serialization** — only one agent turn runs per session at a time. Two close-together messages cannot both read the same answer (prevents duplicate replies).
+- **Restart notices** — an admin `/restart` warns active chats + the home channel, writes durable markers, and respawns the service. On boot the new process pings the home channel (♻️ online) and replies to the requester (♻️ restarted successfully). Markers have a 30-minute TTL and are kept on failure so notices survive an offline platform. `/sethome` configures the home chat.
 - **Groups** — allowed chats/topics, ignored threads, mention requirements, guest mode, and free-response chats decide when to answer. Client-split text and photo bursts merge into one turn; commands are never batched.
 - **Reliability** — `update_id` dedup receipts (24h TTL), per-chat 429 cooldowns persisted to a `0600` file, and polling supervision with heartbeat, stall watchdog, and reconnect ladders. A single poller owns each token; ambiguous send failures are never blindly retried.
 
 ## Commands
 
-`/help`, `/whoami`, `/status`, `/new`, `/stop`, `/models`, `/agent`, `/agents`, `/commands`, `/compact`, `/context`, `/effort`, `/sessions`, `/resume`. `/start` maps to `/help`; `/setagent` is an unadvertised alias for `/agent`. When an admin list is configured, `/sessions` and `/resume` are admin-only.
+`/help`, `/whoami`, `/status`, `/new`, `/stop`, `/models`, `/agent`, `/agents`, `/commands`, `/compact`, `/context`, `/effort`, `/sessions`, `/resume`, `/restart`, `/sethome`. `/start` maps to `/help`; `/setagent` is an unadvertised alias for `/agent`. When an admin list is configured, `/sessions`, `/resume`, `/restart`, and `/sethome` are admin-only.
 
 - `/models` opens an inline model picker (10 providers/page, 8 models/page). There is no working `/model` switch command; use the picker.
 - `/sessions` lists Telegram-bound sessions; `all` lists every OpenCode session, `search <q>` filters by title. `/resume <n>` uses the last listing's index; `/resume <id>` uses a session ID.
@@ -85,6 +86,8 @@ Secrets come from the real environment or the owner-only secrets file; the envir
 | `OPENCODE_TELEGRAM_RICH_MESSAGES` | no | `true` | Native Rich Messages for GFM constructs. |
 | `OPENCODE_TELEGRAM_APPROVALS` | no | `true` | Surface permission requests as Telegram cards. |
 | `OPENCODE_TELEGRAM_APPROVAL_TIMEOUT` | no | `300` | Seconds before a pending approval auto-denies (5..3600). |
+| `TELEGRAM_HOME_CHANNEL` | no | — | Chat for the ♻️ online notice; set with `/sethome`. |
+| `OPENCODE_TELEGRAM_RESTART_NOTIFICATION` | no | `true` | Send restart/shutdown notices. |
 | `TELEGRAM_REACTIONS` | no | `false` | 👀 while working, 👍/👎 on completion. |
 | `OPENCODE_TELEGRAM_TYPING` | no | `true` | Typing indicator while the agent works. |
 | `OPENCODE_TELEGRAM_STATUS_INDICATOR` | no | `false` | Flip bot short description to Online/Offline. |
@@ -121,7 +124,7 @@ chmod 600 ~/.config/opencode/telegram-gateway.env
 ## Verification
 
 ```sh
-bun test test/          # 89 tests: redaction, chunking, config, secrets, commands, media, rendering, gating, approvals, questions, turn queue, reliability
+bun test test/          # 92 tests: redaction, chunking, config, secrets, commands, media, rendering, gating, approvals, questions, turn queue, restart notices, reliability
 ```
 
 For a live smoke test: set the env vars, start OpenCode, send a message from an allowlisted user and from a stranger (by default the stranger gets only an approval notice, never a session), then re-deliver the same `update_id` to confirm dedup.

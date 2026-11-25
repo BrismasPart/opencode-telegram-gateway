@@ -34,6 +34,11 @@ import { httpPermissionReply, httpFormReply, httpFormCancel } from "./opencode_a
 import { TurnQueue } from "./turn_queue.js"
 import { questionText, questionKeyboard, optionAt, applyTyped, type QuestionState, type FormInfo } from "./questions.js"
 import {
+  writeRequesterMarker, readRequesterMarker, clearRequesterMarker,
+  writePlannedMarker, readPlannedMarker, markPlannedDelivered, clearPlannedMarker,
+  claimBootNotice, releaseBootNotice, NOTICE,
+} from "./restart_state.js"
+import {
   groupProviders, providerKeyboard, modelKeyboard, providerText, modelText,
   modelAt, type PickerState, type PickerModel,
 } from "./model_picker.js"
@@ -171,6 +176,44 @@ export default {
           first = false
         }
       }
+    }
+
+    // Boot-time replay of restart notices (new process). Non-blocking, so a
+    // Telegram flood wait cannot hold the inbound gate.
+    if (config.restartNotification && claimBootNotice()) {
+      void (async () => {
+        // Home-channel "online" ping — only when a restart was planned.
+        const planned = readPlannedMarker()
+        if (config.homeChannel && planned) {
+          const target = config.homeChannel
+          if (!planned.deliveredTargets.includes(target)) {
+            try {
+              await api.sendText(target, NOTICE.online)
+              markPlannedDelivered(target)
+              diag("restart_online_sent", token, { chat: target })
+            } catch (e) {
+              diag("restart_online_failed", token, { error: (e as Error)?.name ?? "unknown" })
+            }
+          }
+          if (planned.deliveredTargets.includes(config.homeChannel)) clearPlannedMarker()
+        }
+        // Requester "restarted successfully" reply.
+        const req = readRequesterMarker()
+        if (req) {
+          try {
+            await api.sendText(req.chatId, NOTICE.restarted, req.messageId)
+            clearRequesterMarker()
+            diag("restarted_notice_sent", token, { chat: req.chatId })
+          } catch (e) {
+            // Keep the marker on failure so it can be replayed later.
+            diag("restarted_notice_failed", token, { error: (e as Error)?.name ?? "unknown" })
+          }
+        }
+      })().finally(() => {
+        // Release the claim so a future restart can claim again. Notice
+        // dedup is already handled by the markers (deliveredTargets/cleared).
+        releaseBootNotice()
+      })
     }
 
     /** Build the model catalog and send the first provider page. */
@@ -694,6 +737,50 @@ export default {
         // /models opens an inline picker (bare /model shows the current model).
         if (cmd.name === "models") {
           await openModelPicker(chatId, userId, sessionKey, msg.message_id)
+          return
+        }
+        if (cmd.name === "restart") {
+          // Pre-restart notice: active chats + home channel, sent by THIS
+          // process while the adapter is alive. Then write durable markers
+          // and trigger a service restart in a detached child.
+          await deliver(chatId, NOTICE.preRestart, msg.message_id)
+          if (config.homeChannel && config.homeChannel !== chatId) {
+            await api.sendText(config.homeChannel, NOTICE.preRestart).catch(() => {})
+          }
+          writeRequesterMarker({ chatId, userId, sessionKey, messageId: msg.message_id })
+          writePlannedMarker()
+          diag("restart_requested", token, { chat: chatId, user: userId })
+          // Detached spawn so the child survives this process exiting.
+          void (async () => {
+            try {
+              const { spawn } = await import("node:child_process")
+              const child = spawn("opencode", ["service", "restart"], {
+                detached: true, stdio: "ignore", shell: true,
+              })
+              child.unref?.()
+            } catch (e) {
+              diag("restart_spawn_failed", token, { error: (e as Error)?.name ?? "unknown" })
+            }
+          })()
+          return
+        }
+        if (cmd.name === "sethome") {
+          const target = cmd.arg.trim() || chatId
+          // Update the 0600 env file in place (no echo of secrets).
+          try {
+            const fs = await import("node:fs")
+            const path = `${process.env.HOME || ""}/.config/opencode/telegram-gateway.env`
+            let text = fs.existsSync(path) ? fs.readFileSync(path, "utf8") : ""
+            const re = /^TELEGRAM_HOME_CHANNEL=.*$/m
+            if (re.test(text)) text = text.replace(re, `TELEGRAM_HOME_CHANNEL=${target}`)
+            else text += `\nTELEGRAM_HOME_CHANNEL=${target}\n`
+            fs.writeFileSync(path, text, { mode: 0o600 })
+            config.homeChannel = target
+            await deliver(chatId, `Home channel set to ${target}. Run /restart to apply it to boot notices.`, msg.message_id)
+            diag("sethome", token, { chat: target })
+          } catch (e) {
+            await deliver(chatId, `Could not set home channel: ${safeError(e, token)}`, msg.message_id)
+          }
           return
         }
         try {

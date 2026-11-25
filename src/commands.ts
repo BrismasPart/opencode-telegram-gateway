@@ -18,7 +18,7 @@ import { safeError } from "./redact.js"
 
 export const ALWAYS_ALLOWED = new Set(["help", "whoami"])
 /** Commands that change state or execution — admin-only when gating is on. */
-export const ADMIN_COMMANDS = new Set(["new", "stop", "setagent", "sessions", "resume"])
+export const ADMIN_COMMANDS = new Set(["new", "stop", "setagent", "sessions", "resume", "restart", "sethome"])
 export const USER_COMMANDS = new Set(["status", "models", "agents", "commands", "compact", "context", "effort", "approve", "deny"])
 
 /**
@@ -46,6 +46,8 @@ export const COMMAND_CATALOG: CommandDef[] = [
   { name: "whoami", description: "Your Telegram ID and role" },
   { name: "agent", description: "Switch agent for this session" },
   { name: "agents", description: "List available agents" },
+  { name: "restart", description: "Restart the gateway (admin)" },
+  { name: "sethome", description: "Set the home channel (admin)" },
   { name: "sessions", description: "List sessions; 'all', 'search <q>' (admin only)" },
   { name: "resume", description: "Resume a session by id or list index (admin only)" },
 ]
