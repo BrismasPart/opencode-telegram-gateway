@@ -30,7 +30,9 @@ import { shouldProcess } from "./gating.js"
 import { InboundBatcher } from "./batching.js"
 import { sessionKeyFor, sessionLabel } from "./session_routing.js"
 import { shouldUseRich } from "./rich.js"
-import { httpPermissionReply } from "./opencode_api.js"
+import { httpPermissionReply, httpFormReply, httpFormCancel } from "./opencode_api.js"
+import { TurnQueue } from "./turn_queue.js"
+import { questionText, questionKeyboard, optionAt, applyTyped, type QuestionState, type FormInfo } from "./questions.js"
 import {
   groupProviders, providerKeyboard, modelKeyboard, providerText, modelText,
   modelAt, type PickerState, type PickerModel,
@@ -95,6 +97,9 @@ export default {
     const lastDenyNotice = new Map<string, number>()
     const pickerState = new Map<string, PickerState>() // one picker per chat
     const approvals = new Map<string, ApprovalState>() // approvalId → state
+    const questions = new Map<string, QuestionState>() // questionId → state
+    const typingAnswer = new Map<string, QuestionState>() // chatId → awaiting typed answer
+    const turnQueue = new TurnQueue()
     const sessionOwner = new Map<string, { chatId: string; ownerId: string }>() // OpenCode session → chat
     const approvalTimerMs = config.approvalTimeoutMs
     const forumMenu = new ForumMenuGuard(api, token, menuRowsForForum(config.commandMenuMax))
@@ -280,6 +285,26 @@ export default {
       return true
     }
 
+    /** Resolve a question/form by sending answers via the location-scoped API. */
+    const resolveQuestion = async (qid: string, answers: Record<string, unknown>, actorId: string): Promise<void> => {
+      const st = questions.get(qid)
+      if (!st || st.resolved) return
+      if (actorId !== st.ownerId && !st.adminIds.has(actorId)) {
+        await api.answerCallback(qid, "Only the person who triggered this can answer.").catch(() => {})
+        return
+      }
+      st.resolved = true
+      questions.delete(qid)
+      if (typingAnswer.get(st.chatId)?.id === qid) typingAnswer.delete(st.chatId)
+      const ok = await httpFormReply(st.sessionID, st.formID, answers, st.location?.directory)
+      if (ok) {
+        await api.editText(st.chatId, st.messageId, "Answer sent.", undefined, undefined, { inline_keyboard: [] }).catch(() => {})
+        diag("question_answered", token, { session: st.sessionID })
+      } else {
+        diag("question_reply_failed", token, { session: st.sessionID })
+      }
+    }
+
     /** Fail-closed timeout: always reject, no authorization gate. */
     const timeoutApproval = async (id: string): Promise<void> => {
       const state = approvals.get(id)
@@ -356,8 +381,47 @@ export default {
       const controller = new AbortController()
       void (async () => {
         try {
-          for await (const event of ctx.event.subscribe({ types: ["permission.asked", "permission.replied"], signal: controller.signal })) {
+          for await (const event of ctx.event.subscribe({ types: ["permission.asked", "permission.replied", "form.created", "form.replied", "form.cancelled"], signal: controller.signal })) {
             const ev = event as any
+
+            // ── Question tool (session forms) ──────────────────────────────
+            if (ev.type === "form.created" || ev.type === "form.replied" || ev.type === "form.cancelled") {
+              const fd = ev.data ?? {}
+              const formID = fd.id ?? fd.form?.id
+              const sid = fd.sessionID ?? fd.form?.sessionID
+              if (ev.type !== "form.created") {
+                for (const [qid, st] of questions) {
+                  if (st.sessionID === sid && st.formID === formID) {
+                    st.resolved = true
+                    questions.delete(qid)
+                    if (typingAnswer.get(st.chatId)?.id === qid) typingAnswer.delete(st.chatId)
+                  }
+                }
+                continue
+              }
+              const owner = sessionOwner.get(sid)
+              if (!owner) continue // not a Telegram-driven session
+              const form: FormInfo = fd.form
+              if (!form?.fields?.length) continue
+              const qid = newApprovalId()
+              const state: QuestionState = {
+                id: qid, sessionID: sid, formID: form.id, chatId: owner.chatId,
+                ownerId: owner.ownerId, adminIds: config.adminUsers, messageId: 0,
+                form, location: ev.location ?? undefined, answers: {}, resolved: false,
+              }
+              try {
+                state.messageId = await api.sendText(
+                  owner.chatId, questionText(state), undefined, "HTML", undefined, questionKeyboard(state),
+                )
+                questions.set(qid, state)
+                diag("question_card", token, { session: sid, fields: form.fields.length })
+              } catch (e) {
+                diag("question_send_failed", token, { error: (e as Error)?.name ?? "unknown" })
+                try { await httpFormCancel(sid, form.id, ev.location?.directory) } catch { /* best effort */ }
+              }
+              continue
+            }
+
             if (ev.type === "permission.replied" || ev.type === "permission.asked") {
               const d = ev.data ?? {}
               if (ev.type === "permission.replied") {
@@ -431,7 +495,45 @@ export default {
         }
         try {
           const data = q.data ?? ""
-          if (data.startsWith("ea:")) {
+          if (data.startsWith("qf:")) {
+            // qf:<questionId>:<fieldIndex|cancel>:<optionIndex|other>
+            const parts = data.split(":")
+            const qid = parts[1]
+            const st = questions.get(qid)
+            if (!st || st.resolved) {
+              await api.answerCallback(q.id, "Question expired — ask again").catch(() => {})
+              return
+            }
+            if (String(q.message?.message_id) !== String(st.messageId)) {
+              await api.answerCallback(q.id, "Question expired — ask again").catch(() => {})
+              return
+            }
+            if ((uid !== st.ownerId && !st.adminIds.has(uid)) || q.from?.is_bot) {
+              await api.answerCallback(q.id, "Only the person who triggered this can answer.").catch(() => {})
+              return
+            }
+            await api.answerCallback(q.id)
+            if (parts[2] === "cancel") {
+              st.resolved = true
+              questions.delete(qid)
+              if (typingAnswer.get(st.chatId)?.id === qid) typingAnswer.delete(st.chatId)
+              await httpFormCancel(st.sessionID, st.formID, st.location?.directory)
+              await api.editText(st.chatId, st.messageId, "Question cancelled.", undefined, undefined, { inline_keyboard: [] }).catch(() => {})
+              return
+            }
+            const fieldIndex = Number(parts[2])
+            const choice = parts[3]
+            if (choice === "other") {
+              // Capture the next typed message as this field's answer.
+              typingAnswer.set(st.chatId, st)
+              await api.editText(st.chatId, st.messageId, `Type your answer for: ${st.form.fields[fieldIndex]?.key ?? ""}`, undefined, undefined, { inline_keyboard: [] }).catch(() => {})
+              return
+            }
+            const opt = optionAt(st, fieldIndex, Number(choice))
+            if (!opt) { await api.answerCallback(q.id, "Option not found").catch(() => {}); return }
+            applyTyped(st, fieldIndex, opt.value)
+            await resolveQuestion(qid, st.answers, uid)
+          } else if (data.startsWith("ea:")) {
             // ea:<choice>:<id> — approval card tap.
             const parts = data.split(":")
             const choice = parts[1] as ApprovalChoice
@@ -545,6 +647,19 @@ export default {
       const sessionKey = sessionKeyFor(msg, config, userId)
       const sessionTitle = sessionLabel(msg, sessionKey)
 
+      // Typed answer to a question ("Other" was tapped) — capture before the
+      // message becomes an agent turn.
+      const awaiting = typingAnswer.get(chatId)
+      if (awaiting && !awaiting.resolved && text) {
+        if (userId !== awaiting.ownerId && !awaiting.adminIds.has(userId)) {
+          await deliver(chatId, "Only the person who asked can answer.", msg.message_id)
+          return
+        }
+        const f = awaiting.form.fields[0]
+        await resolveQuestion(awaiting.id, { [f.key]: text }, userId)
+        return
+      }
+
       // Typed /approve|/deny, or bare yes/no — only while an approval is pending.
       const pendingForChat = [...approvals.values()].find((s) => !s.resolved && s.chatId === chatId)
       if (text.startsWith("/approve") || text.startsWith("/deny")) {
@@ -629,59 +744,64 @@ export default {
       const sessionID = await sessions.getOrCreate(sessionKey, sessionTitle)
       sessionOwner.set(sessionID, { chatId, ownerId: userId })
 
-      // Quick polish: 👀 reaction + typing indicator while the agent works.
+      // Quick polish: 👀 reaction acknowledges the message immediately.
       if (config.reactions) void api.setReaction(chatId, msg.message_id, "👀")
-      let typingTimer: ReturnType<typeof setInterval> | undefined
-      if (config.typingIndicator) {
-        void api.setTyping(chatId)
-        typingTimer = setInterval(() => void api.setTyping(chatId), 3_000)
-        typingTimer.unref?.()
-      }
 
-      let previewId: number | undefined
-      if (config.streaming && !config.richMessages) {
+      // Serialize turns per session: only one prompt in flight at a time,
+      // so two close-together messages cannot both read the same last answer.
+      await turnQueue.run(sessionID, async () => {
+        // Typing indicator only while THIS turn is actually running.
+        let typingTimer: ReturnType<typeof setInterval> | undefined
+        if (config.typingIndicator) {
+          void api.setTyping(chatId)
+          typingTimer = setInterval(() => void api.setTyping(chatId), 3_000)
+          typingTimer.unref?.()
+        }
+        let previewId: number | undefined
+        if (config.streaming && !config.richMessages) {
+          try {
+            previewId = await api.sendText(chatId, "…", msg.message_id)
+            active.set(sessionID, { chatId, messageId: previewId, buffer: "", lastEditAt: Date.now() })
+          } catch (e) {
+            console.warn(`[telegram-gateway] preview send failed: ${safeError(e, token)}`)
+            previewId = undefined
+          }
+        }
+
         try {
-          previewId = await api.sendText(chatId, "…", msg.message_id)
-          active.set(sessionID, { chatId, messageId: previewId, buffer: "", lastEditAt: Date.now() })
+          const prompt = [messageText(msg), ...notes].filter(Boolean).join("\n\n")
+          await sessions.prompt(sessionID, prompt, files)
+          const final = await sessions.finalText(sessionID)
+          if (typingTimer) clearInterval(typingTimer)
+          typingTimer = undefined
+          await deliver(chatId, final, msg.message_id, previewId)
+          if (config.reactions) void api.setReaction(chatId, msg.message_id, "👍")
+          diag("reply", token, { update: update.update_id, chat: chatId })
+          console.info(`[telegram-gateway] replied in chat ${chatId} via session ${redact(sessionID, token)}`)
         } catch (e) {
-          console.warn(`[telegram-gateway] preview send failed: ${safeError(e, token)}`)
-          previewId = undefined
-        }
-      }
-
-      try {
-        const prompt = [messageText(msg), ...notes].filter(Boolean).join("\n\n")
-        await sessions.prompt(sessionID, prompt, files)
-        const final = await sessions.finalText(sessionID)
-        if (typingTimer) clearInterval(typingTimer)
-        typingTimer = undefined
-        await deliver(chatId, final, msg.message_id, previewId)
-        if (config.reactions) void api.setReaction(chatId, msg.message_id, "👍")
-        diag("reply", token, { update: update.update_id, chat: chatId })
-        console.info(`[telegram-gateway] replied in chat ${chatId} via session ${redact(sessionID, token)}`)
-      } catch (e) {
-        if (typingTimer) clearInterval(typingTimer)
-        typingTimer = undefined
-        if (config.reactions) void api.setReaction(chatId, msg.message_id, "👎")
-        diag("turn_error", token, { update: update.update_id, chat: chatId, error: (e as Error)?.name ?? "unknown" })
-        console.error(`[telegram-gateway] turn failed in chat ${chatId}: ${safeError(e, token)}`)
-        if (previewId !== undefined) {
-          try {
-            await api.editText(chatId, previewId, "Sorry — I couldn't complete that turn.")
-          } catch {
-            // best effort
+          if (typingTimer) clearInterval(typingTimer)
+          typingTimer = undefined
+          if (config.reactions) void api.setReaction(chatId, msg.message_id, "👎")
+          diag("turn_error", token, { update: update.update_id, chat: chatId, error: (e as Error)?.name ?? "unknown" })
+          console.error(`[telegram-gateway] turn failed in chat ${chatId}: ${safeError(e, token)}`)
+          if (previewId !== undefined) {
+            try {
+              await api.editText(chatId, previewId, "Sorry — I couldn't complete that turn.")
+            } catch {
+              // best effort
+            }
+          } else {
+            try {
+              await api.sendText(chatId, "Sorry — I couldn't complete that turn.")
+            } catch {
+              // best effort
+            }
           }
-        } else {
-          try {
-            await api.sendText(chatId, "Sorry — I couldn't complete that turn.")
-          } catch {
-            // best effort
-          }
+        } finally {
+          if (typingTimer) clearInterval(typingTimer)
+          active.delete(sessionID)
         }
-      } finally {
-        if (typingTimer) clearInterval(typingTimer)
-        active.delete(sessionID)
-      }
+      });
     }
 
     // Batch client-split text / photo bursts before they reach the agent.

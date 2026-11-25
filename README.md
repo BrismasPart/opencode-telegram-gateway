@@ -36,6 +36,8 @@ Plugin setup throws if the token is missing, so create the secrets file before s
 - **Polish** — optional reactions, typing indicator, and Online/Offline bot description.
 - **Authorization** — default-deny user allowlist. Unknown senders get a ready-to-run command for adding their ID, or silence with `OPENCODE_TELEGRAM_UNAUTHORIZED_BEHAVIOR=ignore`. Control commands use a separate admin ACL.
 - **Approvals** — OpenCode permission requests appear as inline-keyboard cards (Allow Once / Always / Deny) and can also be answered in the OpenCode TUI. Cards are deny-only until the full redacted command is shown; taps are bound to the opener/admin and the exact message. Pending cards auto-deny after five minutes.
+- **Questions** — the agent's `question` tool renders as Telegram inline buttons (with an "Other" option for typed answers), so a blocked turn can continue from the chat. Taps are authorized and message-bound like approvals.
+- **Turn serialization** — only one agent turn runs per session at a time. Two close-together messages cannot both read the same answer (prevents duplicate replies).
 - **Groups** — allowed chats/topics, ignored threads, mention requirements, guest mode, and free-response chats decide when to answer. Client-split text and photo bursts merge into one turn; commands are never batched.
 - **Reliability** — `update_id` dedup receipts (24h TTL), per-chat 429 cooldowns persisted to a `0600` file, and polling supervision with heartbeat, stall watchdog, and reconnect ladders. A single poller owns each token; ambiguous send failures are never blindly retried.
 
@@ -119,7 +121,7 @@ chmod 600 ~/.config/opencode/telegram-gateway.env
 ## Verification
 
 ```sh
-bun test test/          # 84 tests: redaction, chunking, config, secrets, commands, media, rendering, gating, approvals, reliability
+bun test test/          # 89 tests: redaction, chunking, config, secrets, commands, media, rendering, gating, approvals, questions, turn queue, reliability
 ```
 
 For a live smoke test: set the env vars, start OpenCode, send a message from an allowlisted user and from a stranger (by default the stranger gets only an approval notice, never a session), then re-deliver the same `update_id` to confirm dedup.

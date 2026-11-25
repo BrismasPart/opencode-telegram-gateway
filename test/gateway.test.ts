@@ -20,7 +20,9 @@ import { shouldProcess } from "../src/gating.js"
 import { sessionKeyFor, sessionLabel } from "../src/session_routing.js"
 import { needsRich, richFits, shouldUseRich } from "../src/rich.js"
 import { approvalChoices, approvalWord, decisionFor, approvalText, type ApprovalState } from "../src/approval.js"
-import { httpPermissionReply } from "../src/opencode_api.js"
+import { httpPermissionReply, httpFormReply, httpFormCancel } from "../src/opencode_api.js"
+import { TurnQueue } from "../src/turn_queue.js"
+import { questionText, questionKeyboard, optionAt, applyTyped, type QuestionState } from "../src/questions.js"
 import { groupProviders, fitLabel, stripCommonPrefix, providerKeyboard, modelKeyboard, modelAt, type PickerState } from "../src/model_picker.js"
 import { InboundBatcher } from "../src/batching.js"
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs"
@@ -500,6 +502,65 @@ describe("flood windows", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("turn queue", () => {
+  test("serializes jobs for the same session", async () => {
+    const q = new TurnQueue()
+    const order: string[] = []
+    let resolveFirst!: () => void
+    const first = new Promise<void>((r) => { resolveFirst = r })
+    const p1 = q.run("s1", async () => { order.push("start1"); await first; order.push("end1") })
+    const p2 = q.run("s1", async () => { order.push("start2") })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(order).toEqual(["start1"]) // second has not started
+    resolveFirst()
+    await Promise.all([p1, p2])
+    expect(order).toEqual(["start1", "end1", "start2"])
+  })
+
+  test("different sessions run concurrently", async () => {
+    const q = new TurnQueue()
+    const order: string[] = []
+    let resolveA!: () => void
+    const gate = new Promise<void>((r) => { resolveA = r })
+    const p1 = q.run("a", async () => { order.push("a"); await gate })
+    const p2 = q.run("b", async () => { order.push("b") })
+    await p2
+    expect(order).toEqual(["a", "b"])
+    resolveA()
+    await p1
+  })
+})
+
+describe("question bridge", () => {
+  const st = (): QuestionState => ({
+    id: "1", sessionID: "ses", formID: "frm", chatId: "c", ownerId: "42",
+    adminIds: new Set(), messageId: 1, location: undefined, answers: {}, resolved: false,
+    form: { id: "frm", sessionID: "ses", title: "Which file?", fields: [
+      { key: "file", type: "string", title: "Pick one", options: [
+        { value: "a.ts", label: "A" }, { value: "b.ts", label: "B" },
+      ] },
+    ] },
+  })
+  test("renders options and an Other button", () => {
+    const kb = questionKeyboard(st())
+    const flat = kb.inline_keyboard.flat()
+    expect(flat.some((b) => b.callback_data === "qf:1:0:0")).toBe(true)
+    expect(flat.some((b) => b.text.includes("Other"))).toBe(true)
+    expect(flat.some((b) => b.text === "Cancel")).toBe(true)
+    expect(questionText(st())).toContain("Which file?")
+  })
+  test("resolves an option and a typed answer", () => {
+    const s = st()
+    expect(optionAt(s, 0, 1)?.value).toBe("b.ts")
+    applyTyped(s, 0, "custom.ts")
+    expect(s.answers.file).toBe("custom.ts")
+  })
+  test("form http helpers fail closed for invalid ids", async () => {
+    expect(await httpFormReply("ses_missing", "frm_missing", { a: "b" }, "/data/home")).toBe(false)
+    expect(await httpFormCancel("ses_missing", "frm_missing", "/data/home")).toBe(false)
   })
 })
 
