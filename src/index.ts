@@ -940,6 +940,14 @@ export default {
     }
 
     return () => {
+      // Note: an externally-initiated `opencode service stop` cannot reliably
+      // deliver a Telegram message — the process is torn down before a
+      // fire-and-forget HTTP call can finish. Hermes can do it only because it
+      // owns its shutdown/drain sequence. The /restart warning (sent before
+      // respawn) and the boot-time notices are reliable; a plain-stop warning
+      // is intentionally not attempted. Any clean shutdown still writes a
+      // planned marker so a CLI restart produces the ♻️ online ping on boot.
+      if (config.restartNotification && !readPlannedMarker()) writePlannedMarker()
       if (config.statusIndicator) {
         void api.setShortDescription("Offline").catch(() => {})
       }

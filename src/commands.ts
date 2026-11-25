@@ -102,6 +102,12 @@ export function commandAllowed(name: string, userId: string, config: GatewayConf
 }
 
 /** List endpoints may return a bare array or an API envelope { data: [...] }. */
+/** Human-readable role. Empty admin list = gating off = full access for all. */
+export function roleLabel(userId: string, config: GatewayConfig): string {
+  if (config.adminUsers.size === 0) return "full access (gating off)"
+  return config.adminUsers.has(userId) ? "admin" : "user"
+}
+
 function unwrapList<T = any>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[]
   if (value && typeof value === "object" && Array.isArray((value as any).data)) {
@@ -120,18 +126,16 @@ export async function runCommand(cmd: ParsedCommand, env: CommandEnv): Promise<s
       return HELP_TEXT
 
     case "whoami": {
-      const admin = config.adminUsers.size === 0 || config.adminUsers.has(userId)
-      return `Telegram user ID: ${userId}\nChat ID: ${chatId}\nRole: ${admin ? "admin" : "user"}`
+      return `Telegram user ID: ${userId}\nChat ID: ${chatId}\nRole: ${roleLabel(userId, config)}`
     }
 
     case "status": {
       const sessionID = await sessions.current(sessionKey)
-      const admin = config.adminUsers.size === 0 || config.adminUsers.has(userId)
       return [
         `Gateway status: connected to Telegram as bot ${botId}`,
         `Authorized users: ${config.allowedUsers.size}`,
         `Command gating: ${config.adminUsers.size ? "on" : "off"}`,
-        `Your role: ${admin ? "admin" : "user"}`,
+        `Your role: ${roleLabel(userId, config)}`,
         `Session: ${sessionID ? "active" : "none"}`,
       ].join("\n")
     }

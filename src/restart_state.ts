@@ -120,7 +120,6 @@ export function clearPlannedMarker(): void {
 
 export const NOTICE = {
   preRestart: "⚠️ Gateway is restarting — your current task will be interrupted.\nSend any message after the restart and I'll try to resume where you left off.",
-  shutdown: "⚠️ Gateway is shutting down — your current task will be interrupted. When it is back online, send any message and I'll try to pick up where we left off.",
   online: "♻️ Gateway online — back and ready.",
   restarted: "♻️ Gateway restarted successfully. Your session continues.",
 }

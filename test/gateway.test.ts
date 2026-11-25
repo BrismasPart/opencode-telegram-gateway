@@ -6,7 +6,7 @@ import { extractDelta } from "../src/streaming.js"
 import { extractAssistantText, SessionBridge } from "../src/sessions.js"
 import { loadSecretsFile } from "../src/secrets.js"
 import { acquirePollerLock } from "../src/single-instance.js"
-import { parseCommand, commandAllowed, runCommand } from "../src/commands.js"
+import { parseCommand, commandAllowed, runCommand, roleLabel } from "../src/commands.js"
 import { sanitizeName, clampNames, normalizeDescription, buildMenuRows, menuFingerprint } from "../src/command_menu.js"
 import { filterCatalog, buildInlinePage, rank } from "../src/inline_picker.js"
 import { safeFilePath, sniffExt, classify, messageMedia } from "../src/media_inbound.js"
@@ -188,6 +188,17 @@ describe("slash commands", () => {
     process.env.TELEGRAM_BOT_TOKEN = TOKEN
     const cfg = loadConfig({ secretsFile: false })
     expect(commandAllowed("new", "anyone", cfg)).toBe(true)
+  })
+
+  test("role label is self-explanatory when gating is off", () => {
+    clear()
+    process.env.TELEGRAM_BOT_TOKEN = TOKEN
+    const off = loadConfig({ secretsFile: false })
+    expect(roleLabel("42", off)).toBe("full access (gating off)")
+    process.env.OPENCODE_TELEGRAM_ADMIN_USERS = "111"
+    const on = loadConfig({ secretsFile: false })
+    expect(roleLabel("111", on)).toBe("admin")
+    expect(roleLabel("222", on)).toBe("user")
   })
 
   test("runCommand reads models from an API envelope { data: [...] }", async () => {
